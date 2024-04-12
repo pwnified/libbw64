@@ -8,6 +8,8 @@ This version fixes a number of buffer overruns, integer overflows, and uses of u
 
 - library can now easier be used as a CMake subproject
 - new CMake option `BW64_PACKAGE_AND_INSTALL`
+- `AxmlChunk::data()`; this allows access to the internal string, avoiding a copy when reading
+- `Bw64Writer::close()`; this should be called before destruction to properly catch exceptions
 
 ### Changed
 
@@ -16,11 +18,13 @@ This version fixes a number of buffer overruns, integer overflows, and uses of u
 - Renamed CMake option `EXAMPLES` to `BW64_EXAMPLES`
 - `FormatInfoChunk::formatTag` now matches the formatTag in the file, rather than always returning 1
 - fmt parsing is stricter -- the chunk size must match the use of cbSize, and the presence if extra data is checked against the formatTag
+- strings can be moved into `AxmlChunk` with `std::make_shared<AxmlChunk>(std:move(some_str))`, to avoid a copy when writing
 
 ### Fixed
 
 - Fix sample rate parameter type in `writeFile()` and `BW64Writer` ctor to support 96k samplerates
 - fmt extra data is now written correctly
+- axml chunks greater than 4GB are now written correctly
 
 ## 0.10.0 - (January 18, 2019)
 ### Added

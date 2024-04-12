@@ -60,8 +60,8 @@ namespace bw64 {
         throw std::runtime_error(errorString.str());
       }
       writeRiffHeader();
-      writeChunkPlaceholder(utils::fourCC("JUNK"), 28u);
-      
+      // 28 byte ds64 header + 12 byte entry for axml
+      writeChunkPlaceholder(utils::fourCC("JUNK"), 40u);
       if (useExtensible) {
         auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
           std::make_shared<ExtraData>(bitDepth, channelMask,
@@ -86,21 +86,39 @@ namespace bw64 {
       writeChunk(dataChunk);
     }
 
-    /**
-     * @brief Finalize file
-     *
-     * This destructor will write all yet-to-be-written chunks to the file
-     * and will also finalize all required information, i.e. the final chunk
-     * sizes etc.
-     */
-    ~Bw64Writer() {
-      finalizeDataChunk();
-      for (auto chunk : postDataChunks_) {
-        writeChunk(chunk);
+    /// finalise and close the file
+    ///
+    /// Write all yet-to-be-written chunks to the file and finalize all
+    /// required information, i.e. the final chunk sizes etc.
+    ///
+    /// It is recommended to call this before the destructor, to handle
+    /// exceptions. If it does throw, this object may be in an invalid state,
+    /// so do not try again without creating a new object.
+    void close() {
+      if (!fileStream_.is_open()) return;
+
+      try {
+        finalizeDataChunk();
+        for (auto chunk : postDataChunks_) {
+          writeChunk(chunk);
+        }
+        finalizeRiffChunk();
+        fileStream_.close();
+      } catch (...) {
+        // ensure that if an exception is thrown the file is still closed, so
+        // the destructor does not throw the same exception
+        fileStream_.close();
+        throw;
       }
-      finalizeRiffChunk();
-      fileStream_.close();
+
+      if (!fileStream_.good())
+        throw std::runtime_error("file error detected when closing");
     }
+
+    /// destructor; this will finalise and close the file if it has not
+    /// already been done, but it is recommended to call close() first to
+    /// handle exceptions
+    ~Bw64Writer() { close(); }
 
     /// @brief Get format tag
     uint16_t formatTag() const { return formatChunk()->formatTag(); };
@@ -163,9 +181,10 @@ namespace bw64 {
       if (riffChunkSize() > UINT32_MAX) {
         return true;
       }
-      if (dataChunk()->size() > UINT32_MAX) {
-        return true;
-      }
+
+      for (auto& header : chunkHeaders_)
+        if (header.size > UINT32_MAX) return true;
+
       return false;
     }
 
@@ -235,8 +254,13 @@ namespace bw64 {
     void overwriteJunkWithDs64Chunk() {
       auto ds64Chunk = std::make_shared<DataSize64Chunk>();
       ds64Chunk->bw64Size(riffChunkSize());
+      // write data size even if it's not too big
       ds64Chunk->dataSize(dataChunk()->size());
-      // TODO: add other chunks which are bigger than 4GB
+
+      for (auto& header : chunkHeaders_)
+        if (header.size > UINT32_MAX)
+          ds64Chunk->setChunkSize(header.id, header.size);
+
       overwriteChunk(utils::fourCC("JUNK"), ds64Chunk);
     }
 
@@ -273,6 +297,15 @@ namespace bw64 {
     /// @brief Overwrite chunk template
     template <typename ChunkType>
     void overwriteChunk(uint32_t id, std::shared_ptr<ChunkType> chunk) {
+      if (chunk->size() > chunkHeader(id).size) {
+        std::stringstream errorMsg;
+        errorMsg << utils::fourCCToStr(chunk->id()) << " chunk is too large ("
+                 << chunk->size() << " bytes) to overwrite "
+                 << utils::fourCCToStr(id) << " chunk (" << chunkHeader(id).size
+                 << " bytes)";
+        throw std::runtime_error(errorMsg.str());
+      }
+
       auto last_position = fileStream_.tellp();
       seekChunk(id);
       utils::writeChunk<ChunkType>(fileStream_, chunk, chunkSizeForHeader(id));
