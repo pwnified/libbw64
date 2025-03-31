@@ -271,8 +271,13 @@ namespace bw64 {
         if (!fileStream_.good())
           throw std::runtime_error("file error while reading frames");
 
-        utils::decodePcmSamples(rawDataBuffer_.data(), outBuffer,
-                                frames * channels(), bitDepth());
+        if (formatChunk()->isFloat()) {
+          utils::decodeFloatSamples(rawDataBuffer_.data(), outBuffer,
+                                    frames * channels(), bitDepth());
+        } else {
+          utils::decodePcmSamples(rawDataBuffer_.data(), outBuffer,
+                                  frames * channels(), bitDepth());
+        }
       }
 
       return frames;

@@ -274,6 +274,56 @@ namespace bw64 {
         throw std::runtime_error(y > 0 ? "overflow" : "underflow");
       return x + y;
     }
+
+    /// @brief Decode IEEE float samples to float array
+    template <typename T, typename std::enable_if<
+                              std::is_floating_point<T>::value, int>::type = 0>
+    void decodeFloatSamples(const char* inBuffer, T* outBuffer,
+                            uint64_t numberOfSamples, uint16_t bitsPerSample) {
+      if (bitsPerSample == 32) {
+        // 32-bit float - direct copy with potential cast
+        for (uint64_t i = 0; i < numberOfSamples; ++i) {
+          float value;
+          std::memcpy(&value, inBuffer + 4 * i, 4);
+          outBuffer[i] = static_cast<T>(value);
+        }
+      } else if (bitsPerSample == 64) {
+        // 64-bit double - direct copy with potential cast
+        for (uint64_t i = 0; i < numberOfSamples; ++i) {
+          double value;
+          std::memcpy(&value, inBuffer + 8 * i, 8);
+          outBuffer[i] = static_cast<T>(value);
+        }
+      } else {
+        std::stringstream errorString;
+        errorString << "unsupported bit depth for float format: " << bitsPerSample;
+        throw std::runtime_error(errorString.str());
+      }
+    }
+
+    /// @brief Encode float array to IEEE float samples
+    template <typename T, typename std::enable_if<
+                              std::is_floating_point<T>::value, int>::type = 0>
+    void encodeFloatSamples(const T* inBuffer, char* outBuffer,
+                            uint64_t numberOfSamples, uint16_t bitsPerSample) {
+      if (bitsPerSample == 32) {
+        // 32-bit float - direct copy with potential cast
+        for (uint64_t i = 0; i < numberOfSamples; ++i) {
+          float value = static_cast<float>(inBuffer[i]);
+          std::memcpy(outBuffer + 4 * i, &value, 4);
+        }
+      } else if (bitsPerSample == 64) {
+        // 64-bit double - direct copy
+        for (uint64_t i = 0; i < numberOfSamples; ++i) {
+          double value = static_cast<double>(inBuffer[i]);
+          std::memcpy(outBuffer + 8 * i, &value, 8);
+        }
+      } else {
+        std::stringstream errorString;
+        errorString << "unsupported bit depth for float format: " << bitsPerSample;
+        throw std::runtime_error(errorString.str());
+      }
+    }
   }  // namespace utils
 
 
@@ -291,12 +341,24 @@ inline bool guidsEqual(bwGUID guid1, bwGUID guid2) {
   return memcmp(&guid1, &guid2, sizeof(bwGUID)) == 0;
 }
 
-#define sKSDATAFORMAT_SUBTYPE_PCM ((bwGUID){0x00000001, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71})
-#define sKSDATAFORMAT_SUBTYPE_IEEE_FLOAT ((bwGUID){0x00000003, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71})
+// Wave format constants
+constexpr uint16_t WAVE_FORMAT_PCM = 0x0001;
+constexpr uint16_t WAVE_FORMAT_IEEE_FLOAT = 0x0003;
+constexpr uint16_t WAVE_FORMAT_EXTENSIBLE = 0xFFFE;
 
-#define WAVE_FORMAT_PCM (0x0001)
-#define WAVE_FORMAT_IEEE_FLOAT (0x0003)
-#define WAVE_FORMAT_EXTENSIBLE (0xFFFE)
+constexpr bwGUID createGUID(uint32_t Data1, uint16_t Data2, uint16_t Data3,
+                            const uint8_t (&Data4)[8]) {
+  return bwGUID{Data1, Data2, Data3, {Data4[0], Data4[1], Data4[2], Data4[3],
+    Data4[4], Data4[5], Data4[6], Data4[7]}};
+}
 
+// Standard GUIDs
+constexpr uint8_t KSDATAFORMAT_SUBTYPE_COMMON_DATA4[8] = {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+
+constexpr bwGUID KSDATAFORMAT_SUBTYPE_PCM =
+    createGUID(WAVE_FORMAT_PCM, 0x0000, 0x0010, KSDATAFORMAT_SUBTYPE_COMMON_DATA4);
+
+constexpr bwGUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
+    createGUID(WAVE_FORMAT_IEEE_FLOAT, 0x0000, 0x0010, KSDATAFORMAT_SUBTYPE_COMMON_DATA4);
 
 }  // namespace bw64

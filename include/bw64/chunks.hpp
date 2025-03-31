@@ -188,7 +188,7 @@ namespace bw64 {
     }
     bool isFloat() const {
       if (isExtensible()) {
-        if (guidsEqual(extraData()->subFormat(), sKSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
+        if (guidsEqual(extraData()->subFormat(), KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
           return true;
         }
       } else if (formatTag_ == WAVE_FORMAT_IEEE_FLOAT) {

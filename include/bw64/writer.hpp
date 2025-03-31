@@ -65,7 +65,7 @@ namespace bw64 {
       if (useExtensible) {
         auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
           std::make_shared<ExtraData>(bitDepth, channelMask,
-            useFloat ? sKSDATAFORMAT_SUBTYPE_IEEE_FLOAT : sKSDATAFORMAT_SUBTYPE_PCM),
+            useFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM),
           WAVE_FORMAT_EXTENSIBLE);
         writeChunk(formatChunk);
       } else {
@@ -343,9 +343,15 @@ namespace bw64 {
     uint64_t write(T* inBuffer, uint64_t frames) {
       uint64_t bytesWritten = frames * formatChunk()->blockAlignment();
       rawDataBuffer_.resize(bytesWritten);
-      utils::encodePcmSamples(inBuffer, &rawDataBuffer_[0],
-                              frames * formatChunk()->channelCount(),
-                              formatChunk()->bitsPerSample());
+      if (formatChunk()->isFloat()) {
+        utils::encodeFloatSamples(inBuffer, &rawDataBuffer_[0],
+                                  frames * formatChunk()->channelCount(),
+                                  formatChunk()->bitsPerSample());
+      } else {
+        utils::encodePcmSamples(inBuffer, &rawDataBuffer_[0],
+                                frames * formatChunk()->channelCount(),
+                                formatChunk()->bitsPerSample());
+      }
       fileStream_.write(&rawDataBuffer_[0], bytesWritten);
       dataChunk()->setSize(dataChunk()->size() + bytesWritten);
       chunkHeader(utils::fourCC("data")).size = dataChunk()->size();

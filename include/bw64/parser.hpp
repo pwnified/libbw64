@@ -5,6 +5,7 @@
  */
 #pragma once
 #include "chunks.hpp"
+#include "chunksExt.hpp"
 #include "utils.hpp"
 
 namespace bw64 {
@@ -238,6 +239,69 @@ namespace bw64 {
     return dataChunk;
   }
 
+  inline std::shared_ptr<CueChunk> parseCueChunk(std::istream& stream, uint32_t id, uint64_t size) {
+    if (id != bw64::utils::fourCC("cue ")) {
+      std::stringstream errorString;
+      errorString << "chunkId != 'cue '";
+      throw std::runtime_error(errorString.str());
+    }
+
+    if (size < 4) {
+      throw std::runtime_error("Cue chunk too small");
+    }
+
+    uint32_t numCuePoints;
+    bw64::utils::readValue(stream, numCuePoints);
+
+    if (size != 4 + numCuePoints * 24) {
+      throw std::runtime_error("Incorrect cue chunk size");
+    }
+
+    std::vector<CuePoint> cuePoints;
+    for (uint32_t i = 0; i < numCuePoints; i++) {
+      CuePoint cue;
+      bw64::utils::readValue(stream, cue.id);
+      bw64::utils::readValue(stream, cue.position);
+      bw64::utils::readValue(stream, cue.dataChunkId);
+      bw64::utils::readValue(stream, cue.chunkStart);
+      bw64::utils::readValue(stream, cue.blockStart);
+      bw64::utils::readValue(stream, cue.sampleOffset);
+      cuePoints.push_back(cue);
+    }
+
+    return std::make_shared<CueChunk>(cuePoints);
+  }
+
+  inline std::shared_ptr<LabelChunk> parseLabelChunk(std::istream& stream, uint32_t id, uint64_t size) {
+    if (id != bw64::utils::fourCC("labl")) {
+      std::stringstream errorString;
+      errorString << "chunkId != 'labl'";
+      throw std::runtime_error(errorString.str());
+    }
+
+    if (size < 5) { // At least 4 bytes for ID + 1 byte for null terminator
+      throw std::runtime_error("Label chunk too small");
+    }
+
+    uint32_t cuePointId;
+    bw64::utils::readValue(stream, cuePointId);
+
+    // Read the null-terminated string
+    std::string label;
+    label.resize(size - 4); // Allocate space for the string excluding the cue point ID
+
+    stream.read(&label[0], size - 4);
+
+    // Remove null terminator and any extra padding
+    size_t nullPos = label.find('\0');
+    if (nullPos != std::string::npos) {
+      label.resize(nullPos);
+    }
+
+    return std::make_shared<LabelChunk>(cuePointId, label);
+  }
+
+
   inline std::shared_ptr<Chunk> parseChunk(std::istream& stream,
                                            ChunkHeader header) {
     stream.clear();
@@ -256,6 +320,10 @@ namespace bw64 {
       return parseChnaChunk(stream, header.id, header.size);
     } else if (header.id == utils::fourCC("data")) {
       return parseDataChunk(stream, header.id, header.size);
+    } else if (header.id == utils::fourCC("cue ")) {
+      return parseCueChunk(stream, header.id, header.size);
+    } else if (header.id == utils::fourCC("labl")) {
+      return parseLabelChunk(stream, header.id, header.size);
     } else {
       return std::make_shared<UnknownChunk>(stream, header.id, header.size);
     }

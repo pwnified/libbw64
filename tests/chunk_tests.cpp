@@ -173,7 +173,7 @@ TEST_CASE("format_info_chunk_extradata") {
     REQUIRE(extraData->validBitsPerSample() == 16);
     REQUIRE(extraData->dwChannelMask() == 4);
     REQUIRE(extraData->subFormat().Data1 == 1);
-    REQUIRE(guidsEqual(extraData->subFormat(), sKSDATAFORMAT_SUBTYPE_PCM) == true);
+    REQUIRE(guidsEqual(extraData->subFormat(), KSDATAFORMAT_SUBTYPE_PCM) == true);
 
     SECTION("write") {
       std::ostringstream written;
@@ -405,4 +405,361 @@ TEST_CASE("axml_chunk_bench", "[.bench]") {
       return stream.tellp();
     });
   };
+}
+
+
+TEST_CASE("cue_chunk") {
+  // basic test
+  {
+    const char* cueChunkByteArray =
+    "\x02\x00\x00\x00"  // numCuePoints = 2
+    // cue point 1
+    "\x01\x00\x00\x00"  // id = 1
+    "\x20\x4E\x00\x00"  // position = 20000
+    "\x64\x61\x74\x61"  // dataChunkId = "data"
+    "\x00\x00\x00\x00"  // chunkStart = 0
+    "\x00\x00\x00\x00"  // blockStart = 0
+    "\x20\x4E\x00\x00"  // sampleOffset = 20000
+    // cue point 2
+    "\x02\x00\x00\x00"  // id = 2
+    "\x40\x9C\x00\x00"  // position = 40000
+    "\x64\x61\x74\x61"  // dataChunkId = "data"
+    "\x00\x00\x00\x00"  // chunkStart = 0
+    "\x00\x00\x00\x00"  // blockStart = 0
+    "\x40\x9C\x00\x00";  // sampleOffset = 40000
+    std::istringstream cueChunkStream(std::string(cueChunkByteArray, 52));
+    auto cueChunk = parseCueChunk(cueChunkStream, utils::fourCC("cue "), 52);
+    REQUIRE(cueChunk->cuePoints().size() == 2);
+    REQUIRE(cueChunk->cuePoints()[0].id == 1);
+    REQUIRE(cueChunk->cuePoints()[0].position == 20000);
+    REQUIRE(cueChunk->cuePoints()[0].dataChunkId == utils::fourCC("data"));
+    REQUIRE(cueChunk->cuePoints()[0].chunkStart == 0);
+    REQUIRE(cueChunk->cuePoints()[0].blockStart == 0);
+    REQUIRE(cueChunk->cuePoints()[0].sampleOffset == 20000);
+    REQUIRE(cueChunk->cuePoints()[1].id == 2);
+    REQUIRE(cueChunk->cuePoints()[1].position == 40000);
+    REQUIRE(cueChunk->cuePoints()[1].dataChunkId == utils::fourCC("data"));
+    REQUIRE(cueChunk->cuePoints()[1].chunkStart == 0);
+    REQUIRE(cueChunk->cuePoints()[1].blockStart == 0);
+    REQUIRE(cueChunk->cuePoints()[1].sampleOffset == 40000);
+  }
+  // read/write
+  {
+    std::stringstream stream;
+    std::vector<CuePoint> cuePoints;
+
+    CuePoint cue1;
+    cue1.id = 1;
+    cue1.position = 20000;
+    cue1.dataChunkId = utils::fourCC("data");
+    cue1.chunkStart = 0;
+    cue1.blockStart = 0;
+    cue1.sampleOffset = 20000;
+    cuePoints.push_back(cue1);
+
+    CuePoint cue2;
+    cue2.id = 2;
+    cue2.position = 40000;
+    cue2.dataChunkId = utils::fourCC("data");
+    cue2.chunkStart = 0;
+    cue2.blockStart = 0;
+    cue2.sampleOffset = 40000;
+    cuePoints.push_back(cue2);
+
+    auto cueChunk = std::make_shared<CueChunk>(cuePoints);
+    cueChunk->write(stream);
+
+    auto cueChunkReread = parseCueChunk(stream, utils::fourCC("cue "), 52);
+    REQUIRE(cueChunkReread->cuePoints().size() == 2);
+    REQUIRE(cueChunkReread->cuePoints()[0].id == 1);
+    REQUIRE(cueChunkReread->cuePoints()[0].position == 20000);
+    REQUIRE(cueChunkReread->cuePoints()[0].dataChunkId == utils::fourCC("data"));
+    REQUIRE(cueChunkReread->cuePoints()[0].sampleOffset == 20000);
+    REQUIRE(cueChunkReread->cuePoints()[1].id == 2);
+    REQUIRE(cueChunkReread->cuePoints()[1].position == 40000);
+    REQUIRE(cueChunkReread->cuePoints()[1].sampleOffset == 40000);
+  }
+  // throws
+  {  // wrong fourCC
+    const char* cueChunkByteArray = "\x00\x00\x00\x00";  // numCuePoints = 0
+    std::istringstream cueChunkStream(std::string(cueChunkByteArray, 4));
+    REQUIRE_THROWS_AS(parseCueChunk(cueChunkStream, utils::fourCC("cuee"), 4),
+                      std::runtime_error);
+  }
+  {  // wrong size (too small)
+    const char* cueChunkByteArray = "\x01\x00\x00\x00";  // numCuePoints = 1
+    std::istringstream cueChunkStream(std::string(cueChunkByteArray, 4));
+    REQUIRE_THROWS_AS(parseCueChunk(cueChunkStream, utils::fourCC("cue "), 4),
+                      std::runtime_error);
+  }
+  {  // size doesn't match number of cue points
+    const char* cueChunkByteArray =
+    "\x02\x00\x00\x00"  // numCuePoints = 2, but only data for 1
+    "\x01\x00\x00\x00"  // id = 1
+    "\x20\x4E\x00\x00"  // position = 20000
+    "\x64\x61\x74\x61"  // dataChunkId = "data"
+    "\x00\x00\x00\x00"  // chunkStart = 0
+    "\x00\x00\x00\x00"  // blockStart = 0
+    "\x20\x4E\x00\x00";  // sampleOffset = 20000
+    std::istringstream cueChunkStream(std::string(cueChunkByteArray, 28));
+    REQUIRE_THROWS_AS(parseCueChunk(cueChunkStream, utils::fourCC("cue "), 28),
+                      std::runtime_error);
+  }
+}
+
+TEST_CASE("label_chunk") {
+  // basic test
+  {
+    const char* labelChunkByteArray =
+    "\x01\x00\x00\x00"  // cuePointId = 1
+    "\x4D\x61\x72\x6B\x65\x72\x20\x31\x00";  // label = "Marker 1" + null terminator
+    std::istringstream labelChunkStream(std::string(labelChunkByteArray, 13));
+    auto labelChunk = parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 13);
+    REQUIRE(labelChunk->cuePointId() == 1);
+    REQUIRE(labelChunk->label() == "Marker 1");
+  }
+  // read/write
+  {
+    std::stringstream stream;
+    auto labelChunk = std::make_shared<LabelChunk>(2, "Test Label");
+    labelChunk->write(stream);
+
+    auto labelChunkReread = parseLabelChunk(stream, utils::fourCC("labl"), 15);
+    REQUIRE(labelChunkReread->cuePointId() == 2);
+    REQUIRE(labelChunkReread->label() == "Test Label");
+  }
+  // throws
+  {  // wrong fourCC
+    const char* labelChunkByteArray =
+    "\x01\x00\x00\x00"  // cuePointId = 1
+    "\x54\x65\x73\x74\x00";  // label = "Test" + null terminator
+    std::istringstream labelChunkStream(std::string(labelChunkByteArray, 9));
+    REQUIRE_THROWS_AS(parseLabelChunk(labelChunkStream, utils::fourCC("label"), 9),
+                      std::runtime_error);
+  }
+  {  // wrong size (too small)
+    const char* labelChunkByteArray = "\x01\x00\x00\x00";  // only cuePointId, no label
+    std::istringstream labelChunkStream(std::string(labelChunkByteArray, 4));
+    REQUIRE_THROWS_AS(parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 4),
+                      std::runtime_error);
+  }
+  // test with empty label (should still have null terminator)
+  {
+    const char* labelChunkByteArray =
+    "\x03\x00\x00\x00"  // cuePointId = 3
+    "\x00";  // empty label with null terminator
+    std::istringstream labelChunkStream(std::string(labelChunkByteArray, 5));
+    auto labelChunk = parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 5);
+    REQUIRE(labelChunk->cuePointId() == 3);
+    REQUIRE(labelChunk->label() == "");
+  }
+  // test with padding bytes after null terminator
+  {
+    const char* labelChunkByteArray =
+    "\x04\x00\x00\x00"  // cuePointId = 4
+    "\x54\x65\x73\x74\x00\x00\x00";  // label = "Test" + null terminator + 2 padding bytes
+    std::istringstream labelChunkStream(std::string(labelChunkByteArray, 11));
+    auto labelChunk = parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 11);
+    REQUIRE(labelChunk->cuePointId() == 4);
+    REQUIRE(labelChunk->label() == "Test");  // padding should be ignored
+  }
+}
+
+
+TEST_CASE("float_format_write_read") {
+  // Test creating and writing to a float-format file
+  {
+    std::string tempFile = "float_format_write_read.wav";
+
+    const uint16_t channels = 2;
+    const uint32_t sampleRate = 48000;
+    const uint16_t bitDepth = 32;
+    const uint64_t numFrames = 1000;
+
+    // Create test sine wave
+    std::vector<float> writeBuffer(channels * numFrames);
+    for (uint64_t i = 0; i < numFrames; ++i) {
+      for (uint16_t ch = 0; ch < channels; ++ch) {
+        float freq = 440.0f * (ch + 1);  // 440Hz, 880Hz
+        float time = static_cast<float>(i) / static_cast<float>(sampleRate);
+        writeBuffer[i * channels + ch] = static_cast<float>(std::sin(2.0 * M_PI * freq * time));
+      }
+    }
+
+    // Create a writer with float format
+    {
+      // First test with standard non-extensible format
+      auto writer = std::unique_ptr<Bw64Writer>(
+          new Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth, {}, false, true));
+
+      uint64_t writtenFrames = writer->write(writeBuffer.data(), numFrames);
+      REQUIRE(writtenFrames == numFrames);
+
+      REQUIRE(writer->formatTag() == WAVE_FORMAT_IEEE_FLOAT);
+      REQUIRE(writer->channels() == channels);
+      REQUIRE(writer->sampleRate() == sampleRate);
+      REQUIRE(writer->bitDepth() == bitDepth);
+      REQUIRE(writer->framesWritten() == numFrames);
+
+      writer->close();
+    }
+
+    // Read back and verify the data
+    {
+      auto reader = readFile(tempFile);
+
+      REQUIRE(reader->formatTag() == WAVE_FORMAT_IEEE_FLOAT);
+      REQUIRE(reader->channels() == channels);
+      REQUIRE(reader->sampleRate() == sampleRate);
+      REQUIRE(reader->bitDepth() == bitDepth);
+      REQUIRE(reader->numberOfFrames() == numFrames);
+
+      auto fmt = reader->formatChunk();
+      REQUIRE(fmt->isFloat() == true);
+
+      std::vector<float> readBuffer(channels * numFrames);
+      uint64_t readFrames = reader->read(readBuffer.data(), numFrames);
+      REQUIRE(readFrames == numFrames);
+
+      for (uint64_t i = 0; i < channels * numFrames; ++i) {
+        REQUIRE(readBuffer[i] == Approx(writeBuffer[i]).epsilon(0.0001));
+      }
+
+      reader->close();
+    }
+
+    // Now test with extensible format
+    {
+      // Define channel mask for stereo
+      uint32_t channelMask = 0x3; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+
+      auto writer = std::unique_ptr<Bw64Writer>(
+          new Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth, {}, true, true, channelMask));
+
+      uint64_t writtenFrames = writer->write(writeBuffer.data(), numFrames);
+      REQUIRE(writtenFrames == numFrames);
+
+      REQUIRE(writer->formatTag() == WAVE_FORMAT_EXTENSIBLE);
+      REQUIRE(writer->framesWritten() == numFrames);
+
+      writer->close();
+    }
+
+    // Read back and verify the extensible format
+    {
+      auto reader = readFile(tempFile);
+
+      REQUIRE(reader->formatTag() == WAVE_FORMAT_EXTENSIBLE);
+
+      auto fmt = reader->formatChunk();
+      REQUIRE(fmt->isExtensible() == true);
+      REQUIRE(fmt->isFloat() == true);
+      REQUIRE(fmt->extraData() != nullptr);
+      REQUIRE(guidsEqual(fmt->extraData()->subFormat(), KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) == true);
+
+      reader->close();
+    }
+
+    // Clean up the test file
+    std::remove(tempFile.c_str());
+  }
+}
+
+
+TEST_CASE("float_format_io") {
+  std::string tempFile = "float_format_io.wav";
+
+  const uint16_t channels = 2;
+  const uint32_t sampleRate = 48000;
+  const uint16_t bitDepth = 32;
+  const uint64_t numFrames = 1000;
+
+  // Test values that would be clipped in integer PCM but not in float
+  std::vector<float> testValues = {
+    -3.5f, -2.0f, -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 2.0f, 3.5f
+  };
+
+  // Create test data with values outside the [-1,1] range
+  std::vector<float> writeBuffer(channels * numFrames);
+  for (uint64_t i = 0; i < numFrames; ++i) {
+    for (uint16_t ch = 0; ch < channels; ++ch) {
+      writeBuffer[i * channels + ch] = testValues[i % testValues.size()];
+    }
+  }
+
+  SECTION("Float format preserves values outside [-1,1]") {
+    // Create a writer with float format
+    {
+      auto writer = std::unique_ptr<Bw64Writer>(
+                                                new Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth,
+                                                               std::vector<std::shared_ptr<Chunk>>(), false, true));
+
+      REQUIRE(writer->formatTag() == WAVE_FORMAT_IEEE_FLOAT);
+      REQUIRE(writer->formatChunk()->isFloat() == true);
+
+      uint64_t writtenFrames = writer->write(writeBuffer.data(), numFrames);
+      REQUIRE(writtenFrames == numFrames);
+      writer->close();
+    }
+
+    // Read back and verify the data
+    {
+      auto reader = readFile(tempFile);
+
+      REQUIRE(reader->formatTag() == WAVE_FORMAT_IEEE_FLOAT);
+      REQUIRE(reader->formatChunk()->isFloat() == true);
+
+      std::vector<float> readBuffer(channels * numFrames);
+      uint64_t readFrames = reader->read(readBuffer.data(), numFrames);
+      REQUIRE(readFrames == numFrames);
+
+      // Verify the values outside [-1,1] should be preserved
+      for (uint64_t i = 0; i < channels * numFrames; ++i) {
+        REQUIRE(readBuffer[i] == Approx(writeBuffer[i]).epsilon(0.0001));
+      }
+
+      reader->close();
+    }
+  }
+
+  SECTION("PCM format clips values outside [-1,1]") {
+    // Create a writer with PCM format
+    {
+      auto writer = std::unique_ptr<Bw64Writer>(
+                                                new Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth,
+                                                               std::vector<std::shared_ptr<Chunk>>(), false, false));
+
+      REQUIRE(writer->formatTag() == WAVE_FORMAT_PCM);
+      REQUIRE(writer->formatChunk()->isFloat() == false);
+
+      uint64_t writtenFrames = writer->write(writeBuffer.data(), numFrames);
+      REQUIRE(writtenFrames == numFrames);
+      writer->close();
+    }
+
+    // Read back and verify the data
+    {
+      auto reader = readFile(tempFile);
+
+      REQUIRE(reader->formatTag() == WAVE_FORMAT_PCM);
+      REQUIRE(reader->formatChunk()->isFloat() == false);
+
+      std::vector<float> readBuffer(channels * numFrames);
+      uint64_t readFrames = reader->read(readBuffer.data(), numFrames);
+      REQUIRE(readFrames == numFrames);
+
+      // Verify the values outside [-1,1] should be clipped
+      for (uint64_t i = 0; i < channels * numFrames; ++i) {
+        float expected = writeBuffer[i];
+        if (expected > 1.0f) expected = 1.0f;
+        if (expected < -1.0f) expected = -1.0f;
+
+        REQUIRE(readBuffer[i] == Approx(expected).epsilon(0.0001));
+      }
+
+      reader->close();
+    }
+  }
+
+  std::remove(tempFile.c_str());
 }
