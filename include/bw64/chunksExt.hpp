@@ -12,6 +12,8 @@
 #include <string>
 #include <cstring>
 
+namespace bw64 {
+
 struct CuePoint {
   uint32_t id;             // Unique identifier
   uint32_t position;       // Sample position
@@ -78,3 +80,57 @@ private:
   uint32_t cuePointId_;
   std::string label_;
 };
+
+
+class ListChunk : public bw64::Chunk {
+public:
+  ListChunk(uint32_t listType, const std::vector<std::shared_ptr<bw64::Chunk>>& subChunks)
+  : listType_(listType), subChunks_(subChunks) {}
+
+  uint32_t id() const override { return bw64::utils::fourCC("LIST"); }
+
+  uint64_t size() const override {
+    // size is list type (4 bytes) plus the size of sub-chunks
+    uint64_t size = 4; // List type
+    for (const auto& chunk : subChunks_) {
+      size += 8; // Chunk ID (4) + Chunk Size (4)
+      size += chunk->size();
+
+      // Padding
+      if (chunk->size() % 2 == 1) {
+        size += 1;
+      }
+    }
+    return size;
+  }
+
+  void write(std::ostream& stream) const override {
+    bw64::utils::writeValue(stream, listType_);
+
+    for (const auto& chunk : subChunks_) {
+      // chunk ID
+      bw64::utils::writeValue(stream, chunk->id());
+
+      // chunk size
+      uint32_t chunkSize = static_cast<uint32_t>(chunk->size());
+      bw64::utils::writeValue(stream, chunkSize);
+
+      // chunk data
+      chunk->write(stream);
+
+      // Padding
+      if (chunk->size() % 2 == 1) {
+        bw64::utils::writeValue(stream, '\0');
+      }
+    }
+  }
+
+  uint32_t listType() const { return listType_; }
+  const std::vector<std::shared_ptr<bw64::Chunk>>& subChunks() const { return subChunks_; }
+
+private:
+  uint32_t listType_;
+  std::vector<std::shared_ptr<bw64::Chunk>> subChunks_;
+};
+
+} // namespace bw64

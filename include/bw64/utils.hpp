@@ -58,9 +58,9 @@ namespace bw64 {
 
     template <typename ChunkType>
     void writeChunk(std::ostream& stream, std::shared_ptr<ChunkType> chunk,
-                    uint32_t chunkSizeForHeader) {
+                    uint32_t chunkSize) {
       writeValue(stream, chunk->id());
-      writeValue(stream, chunkSizeForHeader);
+      writeValue(stream, chunkSize);
       if (chunk->id() != fourCC("data")) {
         chunk->write(stream);
         if (chunk->size() % 2 == 1) {

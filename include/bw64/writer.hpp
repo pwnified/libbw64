@@ -207,11 +207,13 @@ namespace bw64 {
     }
 
     /// @brief Get the chunk size for header
-    uint32_t chunkSizeForHeader(uint32_t id) {
-      if (chunkHeader(id).size >= UINT32_MAX) {
+    /// Now that we support multiple chunks with the same ID,
+    /// this should be renamed to something like clampedChunkSize
+    uint32_t chunkSizeForHeader(std::shared_ptr<Chunk> chunk) {
+      if (chunk->size() >= UINT32_MAX) {
         return UINT32_MAX;
       } else {
-        return static_cast<uint32_t>(chunkHeader(id).size);
+        return static_cast<uint32_t>(chunk->size());
       }
     }
 
@@ -271,7 +273,7 @@ namespace bw64 {
       auto last_position = fileStream_.tellp();
       seekChunk(utils::fourCC("data"));
       utils::writeValue(fileStream_, utils::fourCC("data"));
-      utils::writeValue(fileStream_, chunkSizeForHeader(utils::fourCC("data")));
+      utils::writeValue(fileStream_, chunkSizeForHeader(dataChunk()));
       fileStream_.seekp(last_position);
     }
 
@@ -283,7 +285,7 @@ namespace bw64 {
         chunkHeaders_.push_back(
             ChunkHeader(chunk->id(), chunk->size(), position));
         utils::writeChunk<ChunkType>(fileStream_, chunk,
-                                     chunkSizeForHeader(chunk->id()));
+                                     chunkSizeForHeader(chunk));
         chunks_.push_back(chunk);
       }
     }
@@ -297,7 +299,7 @@ namespace bw64 {
     /// @brief Overwrite chunk template
     template <typename ChunkType>
     void overwriteChunk(uint32_t id, std::shared_ptr<ChunkType> chunk) {
-      if (chunk->size() > chunkHeader(id).size) {
+      if (chunk->size() > chunkHeader(id).size) { // only works for uniquely id'd chunks
         std::stringstream errorMsg;
         errorMsg << utils::fourCCToStr(chunk->id()) << " chunk is too large ("
                  << chunk->size() << " bytes) to overwrite "
@@ -307,8 +309,8 @@ namespace bw64 {
       }
 
       auto last_position = fileStream_.tellp();
-      seekChunk(id);
-      utils::writeChunk<ChunkType>(fileStream_, chunk, chunkSizeForHeader(id));
+      seekChunk(id); // only works for uniquely id'd chunks
+      utils::writeChunk<ChunkType>(fileStream_, chunk, chunkSizeForHeader(chunk));
       fileStream_.seekp(last_position);
     }
 
