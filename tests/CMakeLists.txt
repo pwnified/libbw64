@@ -25,3 +25,5 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/test_data" DESTINATION ${CMAKE_BINARY_DIR
 add_bw64_test(utils_tests)
 add_bw64_test(chunk_tests)
 add_bw64_test(file_tests)
+add_bw64_test(marker_tests)
+add_bw64_test(float_tests)

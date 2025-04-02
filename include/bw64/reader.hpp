@@ -76,9 +76,11 @@ namespace bw64 {
       sampleRate_ = fmtChunk->sampleRate();
       bitsPerSample_ = fmtChunk->bitsPerSample();
 
-      if (!dataChunk())
+      if (!dataChunk()) {
         throw std::runtime_error("mandatory data chunk not found");
-
+      }
+      
+      associateCueLabels();
       seek(0);
     }
 
@@ -403,20 +405,18 @@ namespace bw64 {
     }
 
     /// Find a marker by its ID
-    CuePoint findMarkerById(uint32_t id) const {
+    const CuePoint* findMarkerById(uint32_t id) const {
       auto cueChunkPtr = getCueChunk();
-      if (!cueChunkPtr) return CuePoint{}; // No cue points found
+      if (!cueChunkPtr) {
+          return nullptr; // No cue points
+      }
 
       const auto& cuePoints = cueChunkPtr->cuePoints();
 
       auto it = std::find_if(cuePoints.begin(), cuePoints.end(),
                              [id](const CuePoint& cp) { return cp.id == id; });
 
-      if (it != cuePoints.end()) {
-        return *it;
-      }
-
-      return CuePoint{}; // ID not found
+      return (it != cuePoints.end()) ? &(*it) : nullptr;
     }
 
    private:
@@ -504,6 +504,39 @@ namespace bw64 {
         fileStream_.seekg(chunk_size, std::ios::cur);
         if (!fileStream_.good())
           throw std::runtime_error("file error while seeking past chunk");
+      }
+    }
+    
+    void associateCueLabels() {
+      // Get all cue points
+      auto cueChunkPtr = getCueChunk();
+      if (!cueChunkPtr) {
+        return; // No cue points found
+      }
+      
+      // Find all LIST chunks with labels
+      std::map<uint32_t, std::string> cueLabels;
+      
+      for (const auto& chunk : chunks_) {
+        if (chunk->id() == utils::fourCC("LIST")) {
+          auto listChunk = std::static_pointer_cast<ListChunk>(chunk);
+          if (listChunk->listType() == utils::fourCC("adtl")) {
+            for (const auto& subChunk : listChunk->subChunks()) {
+              if (subChunk->id() == utils::fourCC("labl")) {
+                auto labelChunk = std::static_pointer_cast<LabelChunk>(subChunk);
+                cueLabels[labelChunk->cuePointId()] = labelChunk->label();
+              }
+            }
+          }
+        }
+      }
+      
+      // Now update the labels in the original CuePoints
+      for (auto& cuePoint : cueChunkPtr->cuePointsRef()) {
+        auto it = cueLabels.find(cuePoint.id);
+        if (it != cueLabels.end()) {
+          cuePoint.label = it->second;
+        }
       }
     }
 

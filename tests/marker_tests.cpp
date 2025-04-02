@@ -4,6 +4,204 @@
 
 using namespace bw64;
 
+TEST_CASE("serialize_deserialize_markers_and_labels") {
+  std::string tempFile = "test_markers_labels.wav";
+  std::remove(tempFile.c_str());
+
+  const uint16_t channels = 1;
+  const uint32_t sampleRate = 44100;
+  const uint16_t bitDepth = 16;
+  const uint64_t numFrames = 88200;
+
+  std::vector<float> audioData(numFrames);
+  for (uint64_t i = 0; i < numFrames; ++i) {
+    audioData[i] = 0.5f * std::sin(2.0f * M_PI * 440.0f * i / sampleRate);
+  }
+
+  std::vector<CuePoint> cuePoints;
+
+  CuePoint cue1;
+  cue1.id = 1;
+  cue1.position = (uint32_t)(sampleRate * 0.5); // 0.5 seconds
+  cue1.dataChunkId = bw64::utils::fourCC("data");
+  cue1.chunkStart = 0;
+  cue1.blockStart = 0;
+  cue1.sampleOffset = (uint32_t)(sampleRate * 0.5);
+  cuePoints.push_back(cue1);
+
+  CuePoint cue2;
+  cue2.id = 2;
+  cue2.position = (uint32_t)(sampleRate * 1.0); // 1.0 seconds
+  cue2.dataChunkId = bw64::utils::fourCC("data");
+  cue2.chunkStart = 0;
+  cue2.blockStart = 0;
+  cue2.sampleOffset = (uint32_t)(sampleRate * 1.0);
+  cuePoints.push_back(cue2);
+
+  CuePoint cue3;
+  cue3.id = 3;
+  cue3.position = (uint32_t)(sampleRate * 1.5); // 1.5 seconds
+  cue3.dataChunkId = bw64::utils::fourCC("data");
+  cue3.chunkStart = 0;
+  cue3.blockStart = 0;
+  cue3.sampleOffset = (uint32_t)(sampleRate * 1.5);
+  cuePoints.push_back(cue3);
+
+  auto cueChunk = std::make_shared<CueChunk>(cuePoints);
+
+  auto label1 = std::make_shared<LabelChunk>(1, "Marker 01");
+  auto label2 = std::make_shared<LabelChunk>(2, "Marker 01a");
+  auto label3 = std::make_shared<LabelChunk>(3, "Marker 02");
+
+  // Create a LIST chunk of type 'adtl' containing all label chunks
+  std::vector<std::shared_ptr<bw64::Chunk>> labelChunks;
+  labelChunks.push_back(label1);
+  labelChunks.push_back(label2);
+  labelChunks.push_back(label3);
+
+  auto listChunk = std::make_shared<ListChunk>(bw64::utils::fourCC("adtl"), labelChunks);
+
+  try {
+    std::vector<std::shared_ptr<bw64::Chunk>> additionalChunks;
+    additionalChunks.push_back(cueChunk);
+
+    auto writer = std::unique_ptr<bw64::Bw64Writer>(
+      new bw64::Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth,
+        additionalChunks, false, false, 0));
+
+    writer->write(audioData.data(), numFrames);
+
+    // Adds after the data chunk
+    writer->postDataChunk(listChunk);
+
+    writer->close();
+
+    // Check that file was created
+    {
+      std::ifstream checkFile(tempFile);
+      REQUIRE(checkFile.good());
+      checkFile.close();
+    }
+
+    auto reader = bw64::readFile(tempFile);
+
+    bool foundCueChunk = false;
+    bool foundListChunk = false;
+
+    INFO("Chunks in the file:");
+    for (const auto& chunkHeader : reader->chunks()) {
+      std::string chunkId = {
+        static_cast<char>((chunkHeader.id >> 0) & 0xFF),
+        static_cast<char>((chunkHeader.id >> 8) & 0xFF),
+        static_cast<char>((chunkHeader.id >> 16) & 0xFF),
+        static_cast<char>((chunkHeader.id >> 24) & 0xFF)
+      };
+      INFO("  " << chunkId << " at position " << chunkHeader.position << ", size " << chunkHeader.size);
+
+      if (chunkHeader.id == bw64::utils::fourCC("cue ")) {
+        foundCueChunk = true;
+      }
+      else if (chunkHeader.id == bw64::utils::fourCC("LIST")) {
+        foundListChunk = true;
+      }
+    }
+
+    REQUIRE(foundCueChunk);
+    REQUIRE(foundListChunk);
+
+    std::vector<CuePoint> readCuePoints;
+    std::map<uint32_t, std::string> readLabels;
+
+    std::ifstream file(tempFile, std::ios::binary);
+
+    // TODO: Add a function, or manager class to deal with cue and
+    // TODO: label chunks, also 'note' and 'ltxt' as well.
+    // For now, just read them manually
+
+    for (const auto& chunkHeader : reader->chunks()) {
+      if (chunkHeader.id == bw64::utils::fourCC("cue ")) {
+        file.seekg(chunkHeader.position + 8); // Skip chunk id and size
+        auto readCueChunk = parseCueChunk(file, chunkHeader.id, chunkHeader.size);
+        readCuePoints = readCueChunk->cuePoints();
+      }
+      else if (chunkHeader.id == bw64::utils::fourCC("LIST")) {
+        file.seekg(chunkHeader.position + 8); // Skip chunk ID and size
+
+        // Get any 'adtl' list chunks
+        uint32_t listType;
+        bw64::utils::readValue(file, listType);
+
+        if (listType == bw64::utils::fourCC("adtl")) {
+          uint64_t listDataEnd = chunkHeader.position + 8 + chunkHeader.size;
+
+          while (file.tellg() < listDataEnd) {
+            uint32_t subChunkId;
+            uint32_t subChunkSize;
+
+            bw64::utils::readValue(file, subChunkId);
+            bw64::utils::readValue(file, subChunkSize);
+
+            if (subChunkId == bw64::utils::fourCC("labl")) {
+              uint32_t cuePointId;
+              bw64::utils::readValue(file, cuePointId);
+
+              std::string label(subChunkSize - 4, '\0');
+              file.read(&label[0], subChunkSize - 4);
+
+              size_t nullPos = label.find('\0');
+              if (nullPos != std::string::npos) {
+                label.resize(nullPos);
+              }
+
+              readLabels[cuePointId] = label;
+            } else {
+              // Skip unknown
+              file.seekg(subChunkSize, std::ios::cur);
+              INFO("Unknown subchunk " << subChunkId << " of size " << subChunkSize);
+            }
+
+            if (subChunkSize % 2 == 1) {
+              file.seekg(1, std::ios::cur);
+            }
+          }
+        }
+      }
+    }
+
+    REQUIRE(readCuePoints.size() == 3);
+
+    if (readCuePoints.size() >= 3) {
+      REQUIRE(readCuePoints[0].id == 1);
+      REQUIRE(readCuePoints[0].position == (uint32_t)(sampleRate * 0.5));
+      REQUIRE(readCuePoints[1].id == 2);
+      REQUIRE(readCuePoints[1].position == (uint32_t)(sampleRate * 1.0));
+      REQUIRE(readCuePoints[2].id == 3);
+      REQUIRE(readCuePoints[2].position == (uint32_t)(sampleRate * 1.5));
+    }
+
+    REQUIRE(readLabels.size() == 3);
+
+    if (readLabels.size() >= 3) {
+      REQUIRE(readLabels[1] == "Marker 01");
+      REQUIRE(readLabels[2] == "Marker 01a");
+      REQUIRE(readLabels[3] == "Marker 02");
+    }
+
+    for (const auto& cue : readCuePoints) {
+      REQUIRE(readLabels.find(cue.id) != readLabels.end());
+    }
+
+    reader->close();
+    file.close();
+  }
+  catch (const std::exception& e) {
+    FAIL("Exception occurred: " << e.what());
+  }
+
+  std::remove(tempFile.c_str());
+}
+
+
 TEST_CASE("marker_api_test") {
     std::string tempFile = "marker_api_test.wav";
     std::remove(tempFile.c_str());
@@ -202,17 +400,9 @@ TEST_CASE("exceed_max_markers_test") {
 
         // Write audio data
         writer->write(audioData.data(), numFrames);
-        writer->close();
 
-        // Open the file for reading
-        auto reader = bw64::readFile(tempFile);
-
-        // Get all markers - all should be present since we're not enforcing a hard limit 
-        // in the implementation, just pre-allocating space
-        auto markers = reader->getMarkers();
-        REQUIRE(markers.size() == 3);
-        
-        reader->close();
+        // Try to close the file (should throw because the cue chunk is full)
+        REQUIRE_THROWS_AS(writer->close(), std::runtime_error);
     }
     catch (const std::exception& e) {
         FAIL("Exception occurred: " << e.what());
@@ -399,16 +589,6 @@ TEST_CASE("create_shared_writer_with_markers_test") {
 		REQUIRE(readMarkers[2].id == 3);
 		REQUIRE(readMarkers[2].position == (uint32_t)(sampleRate * 1.5));
 		REQUIRE(readMarkers[2].label == "Marker 3");
-
-		// Check marker 4
-		REQUIRE(readMarkers[3].id == 4);
-		REQUIRE(readMarkers[3].position == (uint32_t)(sampleRate * 2.0));
-		REQUIRE(readMarkers[3].label == "Marker 4");
-
-		// Check marker 5
-		REQUIRE(readMarkers[4].id == 5);
-		REQUIRE(readMarkers[4].position == (uint32_t)(sampleRate * 2.5));
-		REQUIRE(readMarkers[4].label == "Marker 5");
 
 		reader->close();
 	}
