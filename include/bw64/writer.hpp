@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <vector>
 #include "chunks.hpp"
+#include "chunks_ext.hpp"
 #include "utils.hpp"
 
 namespace bw64 {
@@ -41,18 +42,21 @@ namespace bw64 {
      * @warning If the file already exists it will be overwritten.
      *
      * If you need any chunks to appear *before* the data chunk, include them in
-     * the `additionalChunks`. They will be written directly after opening the
+     * the `preDataChunks`. They will be written directly after opening the
      * file.
      *
      * @note For convenience, you might consider using the `writeFile` helper
      * function.
      */
-    Bw64Writer(const char* filename, uint16_t channels, uint32_t sampleRate,
+    Bw64Writer(const char* filename,
+               uint16_t channels,
+               uint32_t sampleRate,
                uint16_t bitDepth,
-               std::vector<std::shared_ptr<Chunk>> additionalChunks,
+               std::vector<std::shared_ptr<Chunk>> preDataChunks,
                bool useExtensible = false,
                bool useFloat = false,
-               uint32_t channelMask = 0) {
+               uint32_t channelMask = 0,
+               uint32_t maxMarkers = 0) {
       fileStream_.open(filename, std::fstream::out | std::fstream::binary);
       if (!fileStream_.is_open()) {
         std::stringstream errorString;
@@ -60,8 +64,10 @@ namespace bw64 {
         throw std::runtime_error(errorString.str());
       }
       writeRiffHeader();
+
       // 28 byte ds64 header + 12 byte entry for axml
       writeChunkPlaceholder(utils::fourCC("JUNK"), 40u);
+
       if (useExtensible) {
         auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
           std::make_shared<ExtraData>(bitDepth, channelMask,
@@ -75,13 +81,25 @@ namespace bw64 {
         writeChunk(formatChunk);
       }
 
-      for (auto chunk : additionalChunks) {
+      for (auto chunk : preDataChunks) {
         writeChunk(chunk);
       }
+
+      // Write CueChunk placeholder
+      if (maxMarkers > 0) {
+        std::vector<CuePoint> emptyCuePoints(maxMarkers, CuePoint{});
+        auto cueChunk = std::make_shared<CueChunk>(emptyCuePoints);
+        writeChunk(cueChunk);
+        cueChunk->clearCuePoints();
+      }
+
+      // Write CHNA chunk placeholder
       if (!chnaChunk()) {
         writeChunkPlaceholder(utils::fourCC("chna"),
                               MAX_NUMBER_OF_UIDS * 40 + 4);
       }
+
+      // Write the data chunk header
       auto dataChunk = std::make_shared<DataChunk>();
       writeChunk(dataChunk);
     }
@@ -99,6 +117,7 @@ namespace bw64 {
 
       try {
         finalizeDataChunk();
+        finalizeCueChunk(); // finalize cue chunk before writing post data chunks
         for (auto chunk : postDataChunks_) {
           writeChunk(chunk);
         }
@@ -175,6 +194,9 @@ namespace bw64 {
     std::shared_ptr<AxmlChunk> axmlChunk() const {
       return chunk<AxmlChunk>(chunks_, utils::fourCC("axml"));
     }
+    std::shared_ptr<CueChunk> cueChunk() const {
+      return chunk<CueChunk>(chunks_, utils::fourCC("cue "));
+    }
 
     /// @brief Check if file is bigger than 4GB and therefore a BW64 file
     bool isBw64File() {
@@ -203,6 +225,11 @@ namespace bw64 {
     }
 
     void setAxmlChunk(std::shared_ptr<Chunk> chunk) {
+      postDataChunks_.push_back(chunk);
+    }
+
+    /// @brief Adds a chunk to be written after the data chunk.
+    void postDataChunk(std::shared_ptr<Chunk> chunk) {
       postDataChunks_.push_back(chunk);
     }
 
@@ -252,6 +279,31 @@ namespace bw64 {
       }
       fileStream_.seekp(last_position);
     }
+
+
+    /// @brief Update Cue chunk
+    void finalizeCueChunk() {
+      auto cueChunkPtr = cueChunk();
+      if (cueChunkPtr && !cueChunkPtr->cuePoints().empty()) {
+        auto labels = cueChunkPtr->getLabels();
+
+        // If we have labels, create a LIST chunk
+        if (!labels.empty()) {
+          std::vector<std::shared_ptr<Chunk>> labelChunks;
+          for (const auto& label : labels) {
+            auto labelChunk = std::make_shared<LabelChunk>(label.first, label.second);
+            labelChunks.push_back(labelChunk);
+          }
+
+          auto listChunk = std::make_shared<ListChunk>(utils::fourCC("adtl"), labelChunks);
+          postDataChunks_.push_back(listChunk);
+        }
+
+        // Overwrite the cue chunk with its current content
+        overwriteChunk(utils::fourCC("cue "), cueChunkPtr);
+      }
+    }
+
 
     void overwriteJunkWithDs64Chunk() {
       auto ds64Chunk = std::make_shared<DataSize64Chunk>();
@@ -385,7 +437,52 @@ namespace bw64 {
       chunkHeader(utils::fourCC("data")).size = dataChunk()->size();
       return (end - start) / frameSize;
     }
-    
+
+    /**
+     * @brief Add a marker to a BW64 file
+     *
+     * @param id Marker ID
+     * @param position Sample position
+     * @param label Optional label
+     */
+    inline void addMarker(uint32_t id, uint64_t position, const std::string& label = "") {
+      // Get the cue chunk
+      auto cueChunkPtr = cueChunk();
+      if (!cueChunkPtr) {
+        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
+      }
+
+      // Add cue point with label to the chunk
+      cueChunkPtr->addCuePoint(id, position, label);
+    }
+
+    /**
+     * @brief Add a marker to a BW64 file
+     *
+     * @param cuePoint CuePoint to add
+     */
+    inline void addMarker(const CuePoint &cuePoint) {
+      auto cueChunkPtr = cueChunk();
+      if (!cueChunkPtr) {
+        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
+      }
+      cueChunkPtr->addCuePoint(cuePoint);
+    }
+
+    /**
+     * @brief Add multiple markers to a BW64 file
+     *
+     * @param markers Vector of markers to add
+     */
+    inline void addMarkers(const std::vector<CuePoint>& markers) {
+      auto cueChunkPtr = cueChunk();
+      if (!cueChunkPtr) {
+        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
+      }
+      for (const auto& marker : markers) {
+        cueChunkPtr->addCuePoint(marker);
+      }
+    }
 
    private:
     std::ofstream fileStream_;

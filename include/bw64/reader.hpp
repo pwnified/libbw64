@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <vector>
 #include "chunks.hpp"
+#include "chunks_ext.hpp"
 #include "utils.hpp"
 #include "parser.hpp"
 
@@ -195,6 +196,16 @@ namespace bw64 {
     std::shared_ptr<AxmlChunk> axmlChunk() const {
       return chunk<AxmlChunk>(chunks_, utils::fourCC("axml"));
     }
+    /**
+     * @brief Get 'cue ' chunk
+     *
+     * @returns `std::shared_ptr` to CueChunk if present and otherwise a
+     * nullptr.
+     */
+    std::shared_ptr<CueChunk> getCueChunk() const {
+      return chunk<CueChunk>(chunks_, utils::fourCC("cue "));
+    }
+
 
     /**
      * @brief Get list of all chunks which are present in the file
@@ -330,7 +341,84 @@ namespace bw64 {
     uint64_t dataStartPos() {
       return getChunkHeader(utils::fourCC("data")).position + 8u;
     }
-    
+
+    /**
+     * @brief Get all LIST chunks in the file
+     *
+     * @returns a vector of shared pointers to all LIST chunks in the file
+     */
+    std::vector<std::shared_ptr<ListChunk>> getListChunks() const {
+      std::vector<std::shared_ptr<ListChunk>> result;
+      for (const auto& chunk : chunks_) {
+        if (chunk->id() == utils::fourCC("LIST")) {
+          auto listChunk = std::static_pointer_cast<ListChunk>(chunk);
+          result.push_back(listChunk);
+        }
+      }
+      return result;
+    }
+
+
+    /**
+     * @brief Get all 'labl' chunks in the file
+     */
+    // In Bw64Reader
+    std::vector<CuePoint> getMarkers() const {
+      // First, get all cue points
+      auto cueChunkPtr = getCueChunk();
+      if (!cueChunkPtr) {
+        return {}; // No cue points found
+      }
+
+      // Get a copy of all cue points from the cue chunk
+      std::vector<CuePoint> markers = cueChunkPtr->cuePoints();
+
+      // Now look for labels in LIST chunks and add them to the cue points
+      for (const auto& chunk : chunks_) {
+        if (chunk->id() == utils::fourCC("LIST")) {
+          auto listChunk = std::static_pointer_cast<ListChunk>(chunk);
+
+          // Check if it's an 'adtl' list
+          if (listChunk->listType() == utils::fourCC("adtl")) {
+            // Look through sub-chunks for labels
+            for (const auto& subChunk : listChunk->subChunks()) {
+              if (subChunk->id() == utils::fourCC("labl")) {
+                auto labelChunk = std::static_pointer_cast<LabelChunk>(subChunk);
+
+                // Find the corresponding marker and set its label
+                uint32_t cueId = labelChunk->cuePointId();
+                for (auto& marker : markers) {
+                  if (marker.id == cueId) {
+                    marker.label = labelChunk->label();
+                    break; // Found the right marker
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return markers;
+    }
+
+    /// Find a marker by its ID
+    CuePoint findMarkerById(uint32_t id) const {
+      auto cueChunkPtr = getCueChunk();
+      if (!cueChunkPtr) return CuePoint{}; // No cue points found
+
+      const auto& cuePoints = cueChunkPtr->cuePoints();
+
+      auto it = std::find_if(cuePoints.begin(), cuePoints.end(),
+                             [id](const CuePoint& cp) { return cp.id == id; });
+
+      if (it != cuePoints.end()) {
+        return *it;
+      }
+
+      return CuePoint{}; // ID not found
+    }
+
    private:
     void readRiffChunk() {
       uint32_t riffType;

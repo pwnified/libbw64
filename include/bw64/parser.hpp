@@ -5,7 +5,7 @@
  */
 #pragma once
 #include "chunks.hpp"
-#include "chunksExt.hpp"
+#include "chunks_ext.hpp"
 #include "utils.hpp"
 
 namespace bw64 {
@@ -239,6 +239,9 @@ namespace bw64 {
     return dataChunk;
   }
 
+/**
+ * @brief Parser function for cue chunk
+ */
   inline std::shared_ptr<CueChunk> parseCueChunk(std::istream& stream, uint32_t id, uint64_t size) {
     if (id != bw64::utils::fourCC("cue ")) {
       std::stringstream errorString;
@@ -272,11 +275,12 @@ namespace bw64 {
     return std::make_shared<CueChunk>(cuePoints);
   }
 
+/**
+ * @brief Parser function for label chunk
+ */
   inline std::shared_ptr<LabelChunk> parseLabelChunk(std::istream& stream, uint32_t id, uint64_t size) {
     if (id != bw64::utils::fourCC("labl")) {
-      std::stringstream errorString;
-      errorString << "chunkId != 'labl'";
-      throw std::runtime_error(errorString.str());
+      throw std::runtime_error("chunkId != 'labl'");
     }
 
     if (size < 5) { // At least 4 bytes for ID + 1 byte for null terminator
@@ -301,6 +305,54 @@ namespace bw64 {
     return std::make_shared<LabelChunk>(cuePointId, label);
   }
 
+/**
+ * @brief Parser function for LIST chunk
+ */
+  inline std::shared_ptr<ListChunk> parseListChunk(std::istream& stream, uint32_t id, uint64_t size) {
+    if (id != bw64::utils::fourCC("LIST")) {
+      throw std::runtime_error("chunkId != 'LIST'");
+    }
+
+    if (size < 4) {
+      throw std::runtime_error("LIST chunk too small");
+    }
+
+    uint32_t listType;
+    utils::readValue(stream, listType);
+
+    std::vector<std::shared_ptr<Chunk>> subChunks;
+    uint64_t bytesRead = 4; // Already got the list type (4 bytes)
+
+    while (bytesRead < size) {
+      uint32_t subChunkId;
+      uint32_t subChunkSize;
+
+      utils::readValue(stream, subChunkId);
+      utils::readValue(stream, subChunkSize);
+      bytesRead += 8; // 4 bytes for each
+
+      std::shared_ptr<Chunk> subChunk;
+      if (subChunkId == utils::fourCC("labl")) {
+        subChunk = parseLabelChunk(stream, subChunkId, subChunkSize);
+        bytesRead += subChunkSize;
+      } else {
+        // Unknown chunks
+        stream.seekg(subChunkSize, std::ios::cur);
+        subChunk = std::make_shared<UnknownChunk>(subChunkId);
+        bytesRead += subChunkSize;
+      }
+
+      subChunks.push_back(subChunk);
+
+      if (subChunkSize % 2 == 1) {
+        stream.seekg(1, std::ios::cur);
+        bytesRead += 1;
+      }
+    }
+
+    return std::make_shared<ListChunk>(listType, subChunks);
+  }
+
 
   inline std::shared_ptr<Chunk> parseChunk(std::istream& stream,
                                            ChunkHeader header) {
@@ -322,8 +374,8 @@ namespace bw64 {
       return parseDataChunk(stream, header.id, header.size);
     } else if (header.id == utils::fourCC("cue ")) {
       return parseCueChunk(stream, header.id, header.size);
-    } else if (header.id == utils::fourCC("labl")) {
-      return parseLabelChunk(stream, header.id, header.size);
+    } else if (header.id == utils::fourCC("LIST")) {
+      return parseListChunk(stream, header.id, header.size);
     } else {
       return std::make_shared<UnknownChunk>(stream, header.id, header.size);
     }

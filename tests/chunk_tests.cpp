@@ -633,8 +633,8 @@ TEST_CASE("serialize_deserialize_markers_and_labels") {
 
     writer->write(audioData.data(), numFrames);
 
-    // Adds after the data chunk (this should be renamed, maybe 'postDataChunks' or similar)
-    writer->setAxmlChunk(listChunk);
+    // Adds after the data chunk
+    writer->postDataChunk(listChunk);
 
     writer->close();
 

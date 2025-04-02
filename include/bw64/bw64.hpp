@@ -46,19 +46,102 @@ namespace bw64 {
    *
    */
   inline std::unique_ptr<Bw64Writer> writeFile(
-      const std::string& filename, uint16_t channels = 1u,
-      uint32_t sampleRate = 48000u, uint16_t bitDepth = 24u,
+      const std::string& filename,
+      uint16_t channels = 1u,
+      uint32_t sampleRate = 48000u,
+      uint16_t bitDepth = 24u,
       std::shared_ptr<ChnaChunk> chnaChunk = nullptr,
       std::shared_ptr<AxmlChunk> axmlChunk = nullptr) {
-    std::vector<std::shared_ptr<Chunk>> additionalChunks;
+    std::vector<std::shared_ptr<Chunk>> preDataChunks;
     if (chnaChunk) {
-      additionalChunks.push_back(chnaChunk);
+      preDataChunks.push_back(chnaChunk);
     }
     if (axmlChunk) {
-      additionalChunks.push_back(axmlChunk);
+      preDataChunks.push_back(axmlChunk);
     }
     return std::unique_ptr<Bw64Writer>(new Bw64Writer(
-        filename.c_str(), channels, sampleRate, bitDepth, additionalChunks));
+        filename.c_str(), channels, sampleRate, bitDepth, preDataChunks));
+  }
+
+
+/**
+ * @brief Create BW64 file for writing
+ *
+ * @return Shared pointer to Bw64Writer instance
+ */
+  inline std::shared_ptr<Bw64Writer> createSharedWriter(
+      const std::string& filename,
+      uint16_t channels = 1u,
+      uint32_t sampleRate = 48000u,
+      uint16_t bitDepth = 24u,
+      std::shared_ptr<ChnaChunk> chnaChunk = nullptr,
+      std::shared_ptr<AxmlChunk> axmlChunk = nullptr) {
+    auto uniqueWriter = writeFile(filename, channels, sampleRate, bitDepth, chnaChunk, axmlChunk);
+    return std::shared_ptr<Bw64Writer>(std::move(uniqueWriter));
+  }
+
+
+/**
+ * @brief Create a BW64 file for writing
+ *
+ * Convenience function which accepts a vector of markers to add to the file.
+ * The markers will be added to the file *before* the actual data chunk, which
+ * is the recommended practice if all components are already known before writing
+ *
+ * @returns `shared_ptr` to a Bw64Writer instance that is ready to write samples
+ */
+  inline std::shared_ptr<Bw64Writer> createSharedWriterWithMarkers(
+      const std::string& filename,
+      uint16_t channels = 1u,
+      uint32_t sampleRate = 48000u,
+      uint16_t bitDepth = 24u,
+      bool useExtensible = false,
+      bool useFloat = false,
+      uint32_t channelMask = 0,
+      const std::vector<CuePoint>& markers = {},
+      std::vector<std::shared_ptr<Chunk>> preDataChunks = {}) {
+
+    bool gotChnaChunk = false;
+    for (auto chunk : preDataChunks) {
+      if (chunk->id() == utils::fourCC("chna")) {
+        gotChnaChunk = true;
+        break;
+      }
+    }
+    if (!gotChnaChunk) {
+      preDataChunks.push_back(std::make_shared<ChnaChunk>()); // A resonable default (empty)
+    }
+
+    auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, (uint32_t)markers.size()));
+
+    for (const auto& cue : markers) {
+      writer->addMarker(cue);
+    }
+    return writer;
+  }
+
+
+/**
+ * @brief Create a BW64 file for writing
+ *
+ * Convenience function which specifies the maximum number of markers to add.
+ * The markers will be added to the file *before* the actual data chunk, which
+ * is the recommended practice if all components are already known before writing
+ *
+ * @returns `shared_ptr` to a Bw64Writer instance that is ready to write samples
+ */
+  inline std::shared_ptr<Bw64Writer> createSharedWriterWithMaxMarkers(
+      const std::string& filename,
+      uint16_t channels = 1u,
+      uint32_t sampleRate = 48000u,
+      uint16_t bitDepth = 24u,
+      bool useExtensible = false,
+      bool useFloat = false,
+      uint32_t channelMask = 0,
+      uint32_t maxMarkers = 0,
+      std::vector<std::shared_ptr<Chunk>> preDataChunks = {}) {
+    auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, maxMarkers));
+    return writer;
   }
 
 }  // namespace bw64

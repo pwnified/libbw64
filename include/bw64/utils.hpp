@@ -324,6 +324,15 @@ namespace bw64 {
         throw std::runtime_error(errorString.str());
       }
     }
+
+    // Convert between sample positions and time
+    uint64_t samplesToTime(uint64_t samples, uint32_t sampleRate);
+    uint64_t timeToSamples(double seconds, uint32_t sampleRate);
+
+    // Format conversion helpers
+    std::string formatTimestamp(double seconds);
+    std::string formatTimecode(uint64_t samples, uint32_t sampleRate);
+
   }  // namespace utils
 
 
