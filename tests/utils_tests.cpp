@@ -356,3 +356,27 @@ TEST_CASE("safe add") {
   checkAddNegative<int32_t>();
   checkAddNegative<int64_t>();
 }
+
+TEST_CASE("count set bits") {
+  REQUIRE(utils::countSetBits(0u) == 0u);
+  REQUIRE(utils::countSetBits(1u) == 1u);
+  REQUIRE(utils::countSetBits(3u) == 2u);  // 0b11
+  REQUIRE(utils::countSetBits(7u) == 3u);  // 0b111
+  REQUIRE(utils::countSetBits(15u) == 4u); // 0b1111
+  REQUIRE(utils::countSetBits(0xFFFFFFFFu) == 32u);
+}
+
+TEST_CASE("correct channel mask") {
+  // Already correct masks should be unchanged
+  REQUIRE(utils::correctChannelMask(0u, 0) == 0u);
+  REQUIRE(utils::correctChannelMask(1u, 1) == 1u);
+  REQUIRE(utils::correctChannelMask(3u, 2) == 3u);  // 0b11
+  REQUIRE(utils::correctChannelMask(7u, 3) == 7u);  // 0b111
+
+  // Incorrect masks should be corrected to lowest N bits
+  REQUIRE(utils::correctChannelMask(0u, 1) == 1u);  // 0b1
+  REQUIRE(utils::correctChannelMask(0u, 2) == 3u);  // 0b11
+  REQUIRE(utils::correctChannelMask(0u, 3) == 7u);  // 0b111
+  REQUIRE(utils::correctChannelMask(5u, 2) == 3u);  // 0b101 -> 0b011
+  REQUIRE(utils::correctChannelMask(9u, 2) == 3u);  // 0b1001 -> 0b0011
+}

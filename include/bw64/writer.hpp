@@ -69,8 +69,9 @@ namespace bw64 {
       writeChunkPlaceholder(utils::fourCC("JUNK"), 40u);
 
       if (useExtensible) {
+        uint32_t correctedChannelMask = utils::correctChannelMask(channelMask, channels);
         auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
-          std::make_shared<ExtraData>(bitDepth, channelMask,
+          std::make_shared<ExtraData>(bitDepth, correctedChannelMask,
             useFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM),
           WAVE_FORMAT_EXTENSIBLE);
         writeChunk(formatChunk);

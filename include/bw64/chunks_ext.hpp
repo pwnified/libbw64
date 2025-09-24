@@ -29,6 +29,16 @@ struct CuePoint {
   CuePoint() : id(0), position(0), dataChunkId(0), chunkStart(0), blockStart(0), sampleOffset(0), label("") {}
   CuePoint(uint32_t id, uint32_t position, const std::string& label = "")
     : id(id), position(position), dataChunkId(0), chunkStart(0), blockStart(0), sampleOffset(position), label(label) {}
+
+  inline bool operator==(const CuePoint& other) const {
+    return id == other.id && position == other.position &&
+           dataChunkId == other.dataChunkId && chunkStart == other.chunkStart &&
+           blockStart == other.blockStart && sampleOffset == other.sampleOffset &&
+           label == other.label;
+  }
+  inline bool operator!=(const CuePoint& other) const {
+    return !(*this == other);
+  }
 };
 
 /**

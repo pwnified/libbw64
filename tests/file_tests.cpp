@@ -415,3 +415,33 @@ TEST_CASE("write_too_many_big_chunks", "[.big]") {
 
   remove(filename.c_str());
 }
+
+TEST_CASE("write_extensible_correct_channel_mask") {
+  std::string filename = "test_extensible_channel_mask.wav";
+
+  // Test with 2 channels and incorrect channelMask (only 1 bit set)
+  {
+    auto writer = Bw64Writer(filename.c_str(), 2, 48000, 24, {}, true, false, 1); // channelMask=1 (only 1 bit set, but 2 channels)
+    std::vector<float> data(100 * 2, 0.0f);
+    writer.write(&data[0], 100);
+    writer.close();
+  }
+
+  // Read back and verify channelMask was corrected
+  {
+    auto reader = readFile(filename);
+    REQUIRE(reader->channels() == 2);
+    REQUIRE(reader->formatTag() == WAVE_FORMAT_EXTENSIBLE);
+
+    auto formatChunk = reader->formatChunk();
+    REQUIRE(formatChunk->isExtensible());
+    auto extraData = formatChunk->extraData();
+    REQUIRE(extraData);
+    // Should be corrected to 0x3 (bits 0 and 1 set for 2 channels)
+    REQUIRE(extraData->dwChannelMask() == 0x3u);
+
+    reader->close();
+  }
+
+  remove(filename.c_str());
+}

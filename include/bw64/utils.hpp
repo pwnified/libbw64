@@ -325,6 +325,28 @@ namespace bw64 {
       }
     }
 
+    /// @brief Count the number of set bits in a 32-bit integer
+    inline uint32_t countSetBits(uint32_t value) {
+      uint32_t count = 0;
+      while (value) {
+        count += value & 1;
+        value >>= 1;
+      }
+      return count;
+    }
+
+    /// @brief Correct channelMask to have exactly 'channels' number of bits set
+    /// If the channelMask already has the correct number of bits set, return it unchanged.
+    /// Otherwise, set the lowest 'channels' bits.
+    inline uint32_t correctChannelMask(uint32_t channelMask, uint16_t channels) {
+      uint32_t setBits = countSetBits(channelMask);
+      if (setBits == channels) {
+        return channelMask;  // Already correct
+      }
+      // Set the lowest 'channels' bits
+      return (1u << channels) - 1;
+    }
+
   }  // namespace utils
 
 
