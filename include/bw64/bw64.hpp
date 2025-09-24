@@ -5,6 +5,8 @@
  * into your user code.
  */
 #pragma once
+#include <cstdio>
+#include <vector>
 #include "reader.hpp"
 #include "writer.hpp"
 
@@ -109,7 +111,16 @@ namespace bw64 {
       }
     }
     if (!gotChnaChunk) {
-      preDataChunks.push_back(std::make_shared<ChnaChunk>()); // A resonable default (empty)
+      // Create a default CHNA chunk with one track per channel
+      std::vector<AudioId> audioIds;
+      for (uint16_t ch = 1; ch <= channels; ++ch) {
+        char uid[13];
+        char trackRef[16];
+        std::snprintf(uid, 13, "ATU_%08d", ch);
+        std::snprintf(trackRef, 16, "AT_000100%02d_01", ch);
+        audioIds.emplace_back(ch, std::string(uid), std::string(trackRef), "AP_00010001");
+      }
+      preDataChunks.push_back(std::make_shared<ChnaChunk>(audioIds));
     }
 
     auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, (uint32_t)markers.size()));
@@ -140,6 +151,27 @@ namespace bw64 {
       uint32_t channelMask = 0,
       uint32_t maxMarkers = 0,
       std::vector<std::shared_ptr<Chunk>> preDataChunks = {}) {
+
+    bool gotChnaChunk = false;
+    for (auto chunk : preDataChunks) {
+      if (chunk->id() == utils::fourCC("chna")) {
+        gotChnaChunk = true;
+        break;
+      }
+    }
+    if (!gotChnaChunk) {
+      // Create a default CHNA chunk with one track per channel
+      std::vector<AudioId> audioIds;
+      for (uint16_t ch = 1; ch <= channels; ++ch) {
+        char uid[13];
+        char trackRef[16];
+        std::snprintf(uid, 13, "ATU_%08d", ch);
+        std::snprintf(trackRef, 16, "AT_000100%02d_01", ch);
+        audioIds.emplace_back(ch, std::string(uid), std::string(trackRef), "AP_00010001");
+      }
+      preDataChunks.push_back(std::make_shared<ChnaChunk>(audioIds));
+    }
+
     auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, maxMarkers));
     return writer;
   }

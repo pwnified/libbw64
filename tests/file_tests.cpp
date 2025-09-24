@@ -445,3 +445,30 @@ TEST_CASE("write_extensible_correct_channel_mask") {
 
   remove(filename.c_str());
 }
+
+TEST_CASE("write_with_correct_chna_chunk") {
+  std::string filename = "test_chna_tracks.wav";
+
+  // Test that CHNA chunk has correct number of tracks
+  {
+    auto writer = createSharedWriterWithMarkers(filename, 2, 48000, 24);
+    std::vector<float> data(100 * 2, 0.0f);
+    writer->write(&data[0], 100);
+    writer->close();
+  }
+
+  // Read back and verify CHNA chunk has correct track count
+  {
+    auto reader = readFile(filename);
+    REQUIRE(reader->channels() == 2);
+
+    auto chnaChunk = reader->chnaChunk();
+    REQUIRE(chnaChunk);
+    REQUIRE(chnaChunk->numTracks() == 2);  // Should match channel count
+    REQUIRE(chnaChunk->numUids() == 2);    // Should have one UID per track
+
+    reader->close();
+  }
+
+  remove(filename.c_str());
+}
