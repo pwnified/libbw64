@@ -337,14 +337,23 @@ namespace bw64 {
 
     /// @brief Correct channelMask to have exactly 'channels' number of bits set
     /// If the channelMask already has the correct number of bits set, return it unchanged.
-    /// Otherwise, set the lowest 'channels' bits.
+    /// For channels <= 31, sets the lowest 'channels' bits.
+    /// For channels > 31, sets SPEAKER_ALL (0x80000000) since we can't represent individual positions.
     inline uint32_t correctChannelMask(uint32_t channelMask, uint16_t channels) {
       uint32_t setBits = countSetBits(channelMask);
       if (setBits == channels) {
         return channelMask;  // Already correct
       }
-      // Set the lowest 'channels' bits
-      return (1u << channels) - 1;
+
+      if (channels == 0) {
+        return 0;
+      } else if (channels <= 31) {
+        // Set the lowest 'channels' bits
+        return (1u << channels) - 1;
+      } else {
+        // For > 31 channels, use SPEAKER_ALL since we can't represent individual speaker positions
+        return 0x80000000u;  // SPEAKER_ALL
+      }
     }
 
   }  // namespace utils

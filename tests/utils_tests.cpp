@@ -379,4 +379,9 @@ TEST_CASE("correct channel mask") {
   REQUIRE(utils::correctChannelMask(0u, 3) == 7u);  // 0b111
   REQUIRE(utils::correctChannelMask(5u, 2) == 3u);  // 0b101 -> 0b011
   REQUIRE(utils::correctChannelMask(9u, 2) == 3u);  // 0b1001 -> 0b0011
+
+  // For > 31 channels, should use SPEAKER_ALL
+  REQUIRE(utils::correctChannelMask(0u, 32) == 0x80000000u);  // SPEAKER_ALL
+  REQUIRE(utils::correctChannelMask(0u, 100) == 0x80000000u); // SPEAKER_ALL
+  REQUIRE(utils::correctChannelMask(0x80000000u, 32) == 0x80000000u); // Already SPEAKER_ALL
 }

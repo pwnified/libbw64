@@ -446,6 +446,36 @@ TEST_CASE("write_extensible_correct_channel_mask") {
   remove(filename.c_str());
 }
 
+TEST_CASE("write_extensible_many_channels_speaker_all") {
+  std::string filename = "test_extensible_many_channels.wav";
+
+  // Test with 32 channels (> 31) - should use SPEAKER_ALL
+  {
+    auto writer = Bw64Writer(filename.c_str(), 32, 48000, 24, {}, true, false, 0); // channelMask=0
+    std::vector<float> data(100 * 32, 0.0f);
+    writer.write(&data[0], 100);
+    writer.close();
+  }
+
+  // Read back and verify channelMask is SPEAKER_ALL
+  {
+    auto reader = readFile(filename);
+    REQUIRE(reader->channels() == 32);
+    REQUIRE(reader->formatTag() == WAVE_FORMAT_EXTENSIBLE);
+
+    auto formatChunk = reader->formatChunk();
+    REQUIRE(formatChunk->isExtensible());
+    auto extraData = formatChunk->extraData();
+    REQUIRE(extraData);
+    // Should be SPEAKER_ALL (0x80000000) for > 31 channels
+    REQUIRE(extraData->dwChannelMask() == 0x80000000u);
+
+    reader->close();
+  }
+
+  remove(filename.c_str());
+}
+
 TEST_CASE("write_with_correct_chna_chunk") {
   std::string filename = "test_chna_tracks.wav";
 
