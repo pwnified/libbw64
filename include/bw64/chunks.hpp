@@ -71,6 +71,9 @@ namespace bw64 {
                 std::ostreambuf_iterator<char>(stream));
     }
 
+    /// @brief Get raw chunk data
+    const std::vector<char>& data() const { return data_; }
+
    private:
     uint32_t chunkId_;
     std::vector<char> data_;

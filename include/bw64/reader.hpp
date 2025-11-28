@@ -208,6 +208,26 @@ namespace bw64 {
       return chunk<CueChunk>(chunks_, utils::fourCC("cue "));
     }
 
+    /**
+     * @brief Get any chunk by fourCC ID
+     *
+     * This generic method allows retrieving any chunk (including unknown/custom chunks)
+     * by its fourCC identifier. Returns the chunk as base Chunk type.
+     *
+     * @param fourCC The fourCC identifier
+     * @returns `std::shared_ptr<Chunk>` if present, otherwise nullptr
+     */
+    std::shared_ptr<Chunk> getChunkByFourCC(uint32_t fourCC) const {
+      auto found = std::find_if(chunks_.begin(), chunks_.end(),
+                                [fourCC](const std::shared_ptr<Chunk>& chunk) {
+                                  return chunk->id() == fourCC;
+                                });
+      if (found != chunks_.end()) {
+        return *found;
+      }
+      return nullptr;
+    }
+
 
     /**
      * @brief Get list of all chunks which are present in the file
