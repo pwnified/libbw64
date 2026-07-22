@@ -27,6 +27,7 @@ started.
 - support file sizes bigger than 4 GB (`ds64` chunk)
 - read and write `axml` and `chna` chunks
 - 16, 24, and 32 bit integer file formats
+- 32 bit IEEE floating-point file formats
 
 ## Installation
 
@@ -155,6 +156,25 @@ int main(int argc, char const* argv[]) {
   return 0;
 }
 ```
+
+For formats that need WAVE extensibility, floating-point encoding, distinct
+valid/container bit depths, or an RF64 large-file identifier, use an explicit
+format descriptor:
+
+```cpp
+bw64::FormatDescriptor format(
+    bw64::SampleEncoding::IeeeFloat,
+    32,  // container bits
+    32,  // valid bits
+    true,
+    0,   // direct-out/discrete channel mask
+    bw64::LargeFileContainer::Rf64);
+auto outFile = bw64::writeFile(argv[1], 8, 48000, format);
+```
+
+For extensible formats, `channelMask` is written verbatim. In particular, a
+zero mask remains zero and libbw64 does not infer speaker positions from the
+channel count.
 
 ### More examples
 

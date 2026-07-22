@@ -1,4 +1,5 @@
 #include <catch2/catch.hpp>
+#include <fstream>
 #include <sstream>
 #include <random>
 #include "bw64/bw64.hpp"
@@ -416,18 +417,18 @@ TEST_CASE("write_too_many_big_chunks", "[.big]") {
   remove(filename.c_str());
 }
 
-TEST_CASE("write_extensible_correct_channel_mask") {
+TEST_CASE("write_extensible_preserves_channel_mask") {
   std::string filename = "test_extensible_channel_mask.wav";
 
-  // Test with 2 channels and incorrect channelMask (only 1 bit set)
+  // A mask with fewer positions than channels is legal and must not be
+  // reinterpreted by the library.
   {
-    auto writer = Bw64Writer(filename.c_str(), 2, 48000, 24, {}, true, false, 1); // channelMask=1 (only 1 bit set, but 2 channels)
+    Bw64Writer writer(filename.c_str(), 2, 48000, 24, {}, true, false, 1);
     std::vector<float> data(100 * 2, 0.0f);
     writer.write(&data[0], 100);
     writer.close();
   }
 
-  // Read back and verify channelMask was corrected
   {
     auto reader = readFile(filename);
     REQUIRE(reader->channels() == 2);
@@ -437,8 +438,7 @@ TEST_CASE("write_extensible_correct_channel_mask") {
     REQUIRE(formatChunk->isExtensible());
     auto extraData = formatChunk->extraData();
     REQUIRE(extraData);
-    // Should be corrected to 0x3 (bits 0 and 1 set for 2 channels)
-    REQUIRE(extraData->dwChannelMask() == 0x3u);
+    REQUIRE(extraData->dwChannelMask() == 0x1u);
 
     reader->close();
   }
@@ -446,18 +446,18 @@ TEST_CASE("write_extensible_correct_channel_mask") {
   remove(filename.c_str());
 }
 
-TEST_CASE("write_extensible_many_channels_speaker_all") {
+TEST_CASE("write_extensible_preserves_zero_channel_mask") {
   std::string filename = "test_extensible_many_channels.wav";
 
-  // Test with 32 channels (> 31) - should use SPEAKER_ALL
+  // Zero means direct-out/discrete channels, including for channel counts that
+  // cannot be represented as individual WAVE speaker bits.
   {
-    auto writer = Bw64Writer(filename.c_str(), 32, 48000, 24, {}, true, false, 0); // channelMask=0
+    Bw64Writer writer(filename.c_str(), 32, 48000, 24, {}, true, false, 0);
     std::vector<float> data(100 * 32, 0.0f);
     writer.write(&data[0], 100);
     writer.close();
   }
 
-  // Read back and verify channelMask is SPEAKER_ALL
   {
     auto reader = readFile(filename);
     REQUIRE(reader->channels() == 32);
@@ -467,13 +467,70 @@ TEST_CASE("write_extensible_many_channels_speaker_all") {
     REQUIRE(formatChunk->isExtensible());
     auto extraData = formatChunk->extraData();
     REQUIRE(extraData);
-    // Should be SPEAKER_ALL (0x80000000) for > 31 channels
-    REQUIRE(extraData->dwChannelMask() == 0x80000000u);
+    REQUIRE(extraData->dwChannelMask() == 0u);
 
     reader->close();
   }
 
   remove(filename.c_str());
+}
+
+TEST_CASE("write_with_explicit_format_descriptor") {
+  std::string filename = "test_explicit_format_descriptor.wav";
+  FormatDescriptor format(SampleEncoding::Pcm, 24u, 20u, true, 0x5u,
+                          LargeFileContainer::Rf64);
+
+  {
+    auto writer = writeFile(filename, 3, 48000, format);
+    REQUIRE(writer->formatDescriptor().sampleEncoding == SampleEncoding::Pcm);
+    REQUIRE(writer->formatDescriptor().containerBits == 24u);
+    REQUIRE(writer->formatDescriptor().validBits == 20u);
+    REQUIRE(writer->formatDescriptor().extensible);
+    REQUIRE(writer->formatDescriptor().channelMask == 0x5u);
+    REQUIRE(writer->formatDescriptor().largeFileContainer ==
+            LargeFileContainer::Rf64);
+    writer->close();
+  }
+
+  {
+    auto reader = readFile(filename);
+    auto extraData = reader->formatChunk()->extraData();
+    REQUIRE(extraData);
+    REQUIRE(extraData->validBitsPerSample() == 20u);
+    REQUIRE(extraData->dwChannelMask() == 0x5u);
+    reader->close();
+  }
+
+  remove(filename.c_str());
+}
+
+TEST_CASE("invalid_write_format_does_not_create_file") {
+  std::string filename = "test_invalid_write_format.wav";
+  remove(filename.c_str());
+
+  SECTION("unsupported float width") {
+    FormatDescriptor format(SampleEncoding::IeeeFloat, 24u, 24u, false, 0u,
+                            LargeFileContainer::Rf64);
+    REQUIRE_THROWS_WITH(Bw64Writer(filename.c_str(), 2, 48000, format),
+                        "IEEE float writing supports only 32 container bits");
+  }
+
+  SECTION("non-extensible valid bits") {
+    FormatDescriptor format(SampleEncoding::Pcm, 24u, 20u, false, 0u,
+                            LargeFileContainer::Bw64);
+    REQUIRE_THROWS_WITH(Bw64Writer(filename.c_str(), 2, 48000, format),
+                        "valid bits require WAVE_FORMAT_EXTENSIBLE");
+  }
+
+  SECTION("non-extensible channel mask") {
+    FormatDescriptor format(SampleEncoding::Pcm, 24u, 24u, false, 0x3u,
+                            LargeFileContainer::Bw64);
+    REQUIRE_THROWS_WITH(Bw64Writer(filename.c_str(), 2, 48000, format),
+                        "channel mask requires WAVE_FORMAT_EXTENSIBLE");
+  }
+
+  std::ifstream file(filename.c_str(), std::ios::binary);
+  REQUIRE_FALSE(file.good());
 }
 
 TEST_CASE("write_with_correct_chna_chunk") {

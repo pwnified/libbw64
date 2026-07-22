@@ -280,24 +280,17 @@ namespace bw64 {
                               std::is_floating_point<T>::value, int>::type = 0>
     void decodeFloatSamples(const char* inBuffer, T* outBuffer,
                             uint64_t numberOfSamples, uint16_t bitsPerSample) {
-      if (bitsPerSample == 32) {
-        // 32-bit float - direct copy with potential cast
-        for (uint64_t i = 0; i < numberOfSamples; ++i) {
-          float value;
-          std::memcpy(&value, inBuffer + 4 * i, 4);
-          outBuffer[i] = static_cast<T>(value);
-        }
-      } else if (bitsPerSample == 64) {
-        // 64-bit double - direct copy with potential cast
-        for (uint64_t i = 0; i < numberOfSamples; ++i) {
-          double value;
-          std::memcpy(&value, inBuffer + 8 * i, 8);
-          outBuffer[i] = static_cast<T>(value);
-        }
-      } else {
+      if (bitsPerSample != 32) {
         std::stringstream errorString;
-        errorString << "unsupported bit depth for float format: " << bitsPerSample;
+        errorString << "unsupported bit depth for float format: "
+                    << bitsPerSample;
         throw std::runtime_error(errorString.str());
+      }
+
+      for (uint64_t i = 0; i < numberOfSamples; ++i) {
+        float value;
+        std::memcpy(&value, inBuffer + 4 * i, 4);
+        outBuffer[i] = static_cast<T>(value);
       }
     }
 
@@ -306,53 +299,16 @@ namespace bw64 {
                               std::is_floating_point<T>::value, int>::type = 0>
     void encodeFloatSamples(const T* inBuffer, char* outBuffer,
                             uint64_t numberOfSamples, uint16_t bitsPerSample) {
-      if (bitsPerSample == 32) {
-        // 32-bit float - direct copy with potential cast
-        for (uint64_t i = 0; i < numberOfSamples; ++i) {
-          float value = static_cast<float>(inBuffer[i]);
-          std::memcpy(outBuffer + 4 * i, &value, 4);
-        }
-      } else if (bitsPerSample == 64) {
-        // 64-bit double - direct copy
-        for (uint64_t i = 0; i < numberOfSamples; ++i) {
-          double value = static_cast<double>(inBuffer[i]);
-          std::memcpy(outBuffer + 8 * i, &value, 8);
-        }
-      } else {
+      if (bitsPerSample != 32) {
         std::stringstream errorString;
-        errorString << "unsupported bit depth for float format: " << bitsPerSample;
+        errorString << "unsupported bit depth for float format: "
+                    << bitsPerSample;
         throw std::runtime_error(errorString.str());
       }
-    }
 
-    /// @brief Count the number of set bits in a 32-bit integer
-    inline uint32_t countSetBits(uint32_t value) {
-      uint32_t count = 0;
-      while (value) {
-        count += value & 1;
-        value >>= 1;
-      }
-      return count;
-    }
-
-    /// @brief Correct channelMask to have exactly 'channels' number of bits set
-    /// If the channelMask already has the correct number of bits set, return it unchanged.
-    /// For channels <= 31, sets the lowest 'channels' bits.
-    /// For channels > 31, sets SPEAKER_ALL (0x80000000) since we can't represent individual positions.
-    inline uint32_t correctChannelMask(uint32_t channelMask, uint16_t channels) {
-      uint32_t setBits = countSetBits(channelMask);
-      if (setBits == channels) {
-        return channelMask;  // Already correct
-      }
-
-      if (channels == 0) {
-        return 0;
-      } else if (channels <= 31) {
-        // Set the lowest 'channels' bits
-        return (1u << channels) - 1;
-      } else {
-        // For > 31 channels, use SPEAKER_ALL since we can't represent individual speaker positions
-        return 0x80000000u;  // SPEAKER_ALL
+      for (uint64_t i = 0; i < numberOfSamples; ++i) {
+        float value = static_cast<float>(inBuffer[i]);
+        std::memcpy(outBuffer + 4 * i, &value, 4);
       }
     }
 

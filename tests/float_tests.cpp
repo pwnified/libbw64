@@ -70,9 +70,11 @@ TEST_CASE("float_format_write_read") {
     {
       // Define channel mask for stereo
       uint32_t channelMask = 0x3; // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+      FormatDescriptor format(SampleEncoding::IeeeFloat, 32u, 32u, true,
+                              channelMask, LargeFileContainer::Rf64);
 
       auto writer = std::unique_ptr<Bw64Writer>(
-          new Bw64Writer(tempFile.c_str(), channels, sampleRate, bitDepth, {}, true, true, channelMask));
+          new Bw64Writer(tempFile.c_str(), channels, sampleRate, format));
 
       uint64_t writtenFrames = writer->write(writeBuffer.data(), numFrames);
       REQUIRE(writtenFrames == numFrames);

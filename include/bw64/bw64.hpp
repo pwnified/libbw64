@@ -65,6 +65,29 @@ namespace bw64 {
         filename.c_str(), channels, sampleRate, bitDepth, preDataChunks));
   }
 
+  /**
+   * @brief Open a file for writing with an explicit WAVE format description.
+   *
+   * The descriptor's channel mask is preserved verbatim. Its large-file
+   * container selects BW64 or RF64 if the completed file exceeds 4 GB.
+   */
+  inline std::unique_ptr<Bw64Writer> writeFile(
+      const std::string& filename,
+      uint16_t channels,
+      uint32_t sampleRate,
+      const FormatDescriptor& format,
+      std::shared_ptr<ChnaChunk> chnaChunk = nullptr,
+      std::shared_ptr<AxmlChunk> axmlChunk = nullptr) {
+    std::vector<std::shared_ptr<Chunk>> preDataChunks;
+    if (chnaChunk) {
+      preDataChunks.push_back(chnaChunk);
+    }
+    if (axmlChunk) {
+      preDataChunks.push_back(axmlChunk);
+    }
+    return std::unique_ptr<Bw64Writer>(new Bw64Writer(
+        filename.c_str(), channels, sampleRate, format, preDataChunks));
+  }
 
 /**
  * @brief Create BW64 file for writing

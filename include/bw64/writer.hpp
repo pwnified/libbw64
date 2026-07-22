@@ -18,6 +18,48 @@ namespace bw64 {
 
   const uint32_t MAX_NUMBER_OF_UIDS = 1024;
 
+  /// @brief Encoding of samples stored in the data chunk.
+  enum class SampleEncoding {
+    Pcm,
+    IeeeFloat
+  };
+
+  /// @brief RIFF identifier to use if the file grows beyond 4 GB.
+  enum class LargeFileContainer {
+    Bw64,
+    Rf64
+  };
+
+  /**
+   * @brief Explicit description of the WAVE format written by Bw64Writer.
+   *
+   * `channelMask` is written verbatim for WAVE_FORMAT_EXTENSIBLE. A zero mask
+   * denotes direct-out/discrete channels, and a mask whose population differs
+   * from the channel count is legal. libbw64 does not infer speaker positions.
+   */
+  struct FormatDescriptor {
+    FormatDescriptor(
+        SampleEncoding sampleEncoding,
+        uint16_t containerBits,
+        uint16_t validBits,
+        bool extensible,
+        uint32_t channelMask,
+        LargeFileContainer largeFileContainer)
+        : sampleEncoding(sampleEncoding),
+          containerBits(containerBits),
+          validBits(validBits),
+          extensible(extensible),
+          channelMask(channelMask),
+          largeFileContainer(largeFileContainer) {}
+
+    SampleEncoding sampleEncoding;
+    uint16_t containerBits;
+    uint16_t validBits;
+    bool extensible;
+    uint32_t channelMask;
+    LargeFileContainer largeFileContainer;
+  };
+
   /**
    * @brief BW64 Writer class
    *
@@ -51,12 +93,15 @@ namespace bw64 {
     Bw64Writer(const char* filename,
                uint16_t channels,
                uint32_t sampleRate,
-               uint16_t bitDepth,
-               std::vector<std::shared_ptr<Chunk>> preDataChunks,
-               bool useExtensible = false,
-               bool useFloat = false,
-               uint32_t channelMask = 0,
-               uint32_t maxMarkers = 0) {
+               const FormatDescriptor& format,
+               std::vector<std::shared_ptr<Chunk>> preDataChunks = {},
+               uint32_t maxMarkers = 0)
+        : formatDescriptor_(format),
+          useRf64Id_(format.largeFileContainer == LargeFileContainer::Rf64) {
+      // Construct and validate the format before opening (and potentially
+      // truncating) the destination file.
+      auto formatChunk = makeFormatChunk(channels, sampleRate, format);
+
       fileStream_.open(filename, std::fstream::out | std::fstream::binary);
       if (!fileStream_.is_open()) {
         std::stringstream errorString;
@@ -68,19 +113,7 @@ namespace bw64 {
       // 28 byte ds64 header + 12 byte entry for axml
       writeChunkPlaceholder(utils::fourCC("JUNK"), 40u);
 
-      if (useExtensible) {
-        uint32_t correctedChannelMask = utils::correctChannelMask(channelMask, channels);
-        auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
-          std::make_shared<ExtraData>(bitDepth, correctedChannelMask,
-            useFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM),
-          WAVE_FORMAT_EXTENSIBLE);
-        writeChunk(formatChunk);
-      } else {
-        auto formatChunk = std::make_shared<FormatInfoChunk>(channels, sampleRate, bitDepth,
-          nullptr,
-          useFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM);
-        writeChunk(formatChunk);
-      }
+      writeChunk(formatChunk);
 
       for (auto chunk : preDataChunks) {
         writeChunk(chunk);
@@ -104,6 +137,27 @@ namespace bw64 {
       auto dataChunk = std::make_shared<DataChunk>();
       writeChunk(dataChunk);
     }
+
+    /**
+     * @brief Backwards-compatible writer constructor.
+     *
+     * New code should use FormatDescriptor so that the sample encoding,
+     * container bits, valid bits and large-file RIFF identifier are explicit.
+     * The supplied channel mask is preserved verbatim.
+     */
+    Bw64Writer(const char* filename,
+               uint16_t channels,
+               uint32_t sampleRate,
+               uint16_t bitDepth,
+               std::vector<std::shared_ptr<Chunk>> preDataChunks,
+               bool useExtensible = false,
+               bool useFloat = false,
+               uint32_t channelMask = 0,
+               uint32_t maxMarkers = 0)
+        : Bw64Writer(filename, channels, sampleRate,
+                     legacyFormatDescriptor(bitDepth, useExtensible, useFloat,
+                                            channelMask),
+                     preDataChunks, maxMarkers) {}
 
     /// finalise and close the file
     ///
@@ -148,6 +202,10 @@ namespace bw64 {
     uint32_t sampleRate() const { return formatChunk()->sampleRate(); };
     /// @brief Get bit depth
     uint16_t bitDepth() const { return formatChunk()->bitsPerSample(); };
+    /// @brief Get the explicit format description used to create this writer
+    const FormatDescriptor& formatDescriptor() const {
+      return formatDescriptor_;
+    }
     /// @brief Get number of frames
     uint64_t framesWritten() const {
       return dataChunk()->size() / formatChunk()->blockAlignment();
@@ -212,7 +270,11 @@ namespace bw64 {
     }
 
     /// @brief Use RF64 ID for outer chunk (when >4GB) rather than BW64
-    void useRf64Id(bool state) { useRf64Id_ = state; }
+    void useRf64Id(bool state) {
+      useRf64Id_ = state;
+      formatDescriptor_.largeFileContainer =
+          state ? LargeFileContainer::Rf64 : LargeFileContainer::Bw64;
+    }
 
     void setChnaChunk(std::shared_ptr<ChnaChunk> chunk) {
       if (chunk->numUids() > 1024) {
@@ -486,11 +548,92 @@ namespace bw64 {
     }
 
    private:
+    static FormatDescriptor legacyFormatDescriptor(uint16_t bitDepth,
+                                                    bool useExtensible,
+                                                    bool useFloat,
+                                                    uint32_t channelMask) {
+      return FormatDescriptor(
+          useFloat ? SampleEncoding::IeeeFloat : SampleEncoding::Pcm,
+          bitDepth, bitDepth, useExtensible, channelMask,
+          LargeFileContainer::Bw64);
+    }
+
+    static void validateFormatDescriptor(const FormatDescriptor& format) {
+      switch (format.sampleEncoding) {
+        case SampleEncoding::Pcm:
+        case SampleEncoding::IeeeFloat:
+          break;
+        default:
+          throw std::runtime_error("unsupported sample encoding");
+      }
+      switch (format.largeFileContainer) {
+        case LargeFileContainer::Bw64:
+        case LargeFileContainer::Rf64:
+          break;
+        default:
+          throw std::runtime_error("unsupported large-file container");
+      }
+      if (format.containerBits != 16u && format.containerBits != 24u &&
+          format.containerBits != 32u) {
+        std::stringstream errorString;
+        errorString << "container bits not supported: "
+                    << format.containerBits;
+        throw std::runtime_error(errorString.str());
+      }
+      if (format.validBits == 0u ||
+          format.validBits > format.containerBits) {
+        throw std::runtime_error(
+            "valid bits must be between 1 and container bits");
+      }
+      if (!format.extensible &&
+          format.validBits != format.containerBits) {
+        throw std::runtime_error(
+            "valid bits require WAVE_FORMAT_EXTENSIBLE");
+      }
+      if (!format.extensible && format.channelMask != 0u) {
+        throw std::runtime_error(
+            "channel mask requires WAVE_FORMAT_EXTENSIBLE");
+      }
+      if (format.sampleEncoding == SampleEncoding::IeeeFloat) {
+        if (format.containerBits != 32u) {
+          throw std::runtime_error(
+              "IEEE float writing supports only 32 container bits");
+        }
+        if (format.validBits != format.containerBits) {
+          throw std::runtime_error(
+              "IEEE float valid bits must equal container bits");
+        }
+      }
+    }
+
+    static std::shared_ptr<FormatInfoChunk> makeFormatChunk(
+        uint16_t channels, uint32_t sampleRate,
+        const FormatDescriptor& format) {
+      validateFormatDescriptor(format);
+
+      const bool useFloat =
+          format.sampleEncoding == SampleEncoding::IeeeFloat;
+      if (format.extensible) {
+        return std::make_shared<FormatInfoChunk>(
+            channels, sampleRate, format.containerBits,
+            std::make_shared<ExtraData>(
+                format.validBits, format.channelMask,
+                useFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+                         : KSDATAFORMAT_SUBTYPE_PCM),
+            WAVE_FORMAT_EXTENSIBLE);
+      }
+
+      return std::make_shared<FormatInfoChunk>(
+          channels, sampleRate, format.containerBits, nullptr,
+          useFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM);
+    }
+
     std::ofstream fileStream_;
     std::vector<char> rawDataBuffer_;
     std::vector<std::shared_ptr<Chunk>> chunks_;
     std::vector<ChunkHeader> chunkHeaders_;
     std::vector<std::shared_ptr<Chunk>> postDataChunks_;
+    FormatDescriptor formatDescriptor_;
     bool useRf64Id_{false};
   };
 
