@@ -325,7 +325,7 @@ struct bwGUID {
   uint8_t  Data4[8];
 };
 
-inline bool guidsEqual(bwGUID guid1, bwGUID guid2) {
+inline bool guidsEqual(const bwGUID& guid1, const bwGUID& guid2) {
   return memcmp(&guid1, &guid2, sizeof(bwGUID)) == 0;
 }
 
@@ -348,5 +348,11 @@ constexpr bwGUID KSDATAFORMAT_SUBTYPE_PCM =
 
 constexpr bwGUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
     createGUID(WAVE_FORMAT_IEEE_FLOAT, 0x0000, 0x0010, KSDATAFORMAT_SUBTYPE_COMMON_DATA4);
+
+/// @brief Check for a fully canonical WAVE extensible subformat GUID.
+inline bool isSupportedWaveSubFormat(const bwGUID& guid) {
+  return guidsEqual(guid, KSDATAFORMAT_SUBTYPE_PCM) ||
+         guidsEqual(guid, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+}
 
 }  // namespace bw64

@@ -79,11 +79,6 @@ namespace bw64 {
       }
 
       extraData = parseExtraData(stream);
-
-      uint32_t Data1 = extraData->subFormat().Data1;
-      if (Data1 != WAVE_FORMAT_PCM && Data1 != WAVE_FORMAT_IEEE_FLOAT) {
-        throw std::runtime_error("subformat unsupported");
-      }
     } else {
       std::stringstream errorString;
       errorString << "format unsupported: " << formatTag;

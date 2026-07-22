@@ -131,8 +131,7 @@ namespace bw64 {
         if (!extraData_) {
           throw std::runtime_error("need extraData when specifying extensible");
         }
-        bwGUID guid{extraData_->subFormat()};
-        if (guid.Data1 != WAVE_FORMAT_PCM && guid.Data1 != WAVE_FORMAT_IEEE_FLOAT) {
+        if (!isSupportedWaveSubFormat(extraData_->subFormat())) {
           throw std::runtime_error("unsupported extensible subformat");
         }
       }

@@ -198,6 +198,77 @@ TEST_CASE("format_info_chunk_extradata") {
   }
 }
 
+TEST_CASE("format_info_chunk_extensible_subformat_guid") {
+  SECTION("accepts canonical PCM and IEEE float GUIDs") {
+    auto pcmExtraData = std::make_shared<ExtraData>(24u, 0u,
+                                                    KSDATAFORMAT_SUBTYPE_PCM);
+    REQUIRE_NOTHROW(FormatInfoChunk(2u, 48000u, 24u, pcmExtraData,
+                                    WAVE_FORMAT_EXTENSIBLE));
+
+    auto floatExtraData = std::make_shared<ExtraData>(
+        32u, 0u, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+    REQUIRE_NOTHROW(FormatInfoChunk(2u, 48000u, 32u, floatExtraData,
+                                    WAVE_FORMAT_EXTENSIBLE));
+  }
+
+  SECTION("rejects malformed PCM Data2") {
+    bwGUID guid = KSDATAFORMAT_SUBTYPE_PCM;
+    guid.Data2 = 1u;
+    auto extraData = std::make_shared<ExtraData>(24u, 0u, guid);
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(2u, 48000u, 24u, extraData,
+                        WAVE_FORMAT_EXTENSIBLE),
+        "unsupported extensible subformat");
+  }
+
+  SECTION("rejects malformed PCM Data3") {
+    bwGUID guid = KSDATAFORMAT_SUBTYPE_PCM;
+    guid.Data3 = 0u;
+    auto extraData = std::make_shared<ExtraData>(24u, 0u, guid);
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(2u, 48000u, 24u, extraData,
+                        WAVE_FORMAT_EXTENSIBLE),
+        "unsupported extensible subformat");
+  }
+
+  SECTION("rejects malformed PCM Data4") {
+    bwGUID guid = KSDATAFORMAT_SUBTYPE_PCM;
+    guid.Data4[7] ^= 1u;
+    auto extraData = std::make_shared<ExtraData>(24u, 0u, guid);
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(2u, 48000u, 24u, extraData,
+                        WAVE_FORMAT_EXTENSIBLE),
+        "unsupported extensible subformat");
+  }
+
+  SECTION("rejects malformed IEEE float GUID") {
+    bwGUID guid = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    guid.Data4[0] ^= 1u;
+    auto extraData = std::make_shared<ExtraData>(32u, 0u, guid);
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(2u, 48000u, 32u, extraData,
+                        WAVE_FORMAT_EXTENSIBLE),
+        "unsupported extensible subformat");
+  }
+
+  SECTION("parser delegates full GUID validation") {
+    const char* formatChunkByteArray =
+        "\xfe\xff\x01\x00"  // formatTag = 0xfffe; channelCount = 1
+        "\x80\xbb\x00\x00"  // sampleRate = 48000
+        "\x00\x77\x01\x00"  // bytesPerSecond = 96000
+        "\x02\x00\x10\x00"  // blockAlignment = 2; bitsPerSample = 16
+        "\x16\x00"  // cbSize = 22
+        "\x10\x00"  // validBitsPerSample = 16
+        "\x04\x00\x00\x00"  // dwChannelMask = SPEAKER_FRONT_CENTER
+        "\x01\x00\x00\x00\x00\x00\x10\x00"
+        "\x80\x00\x00\xaa\x00\x38\x9b\x70";  // malformed PCM GUID
+    std::istringstream formatChunkStream(std::string(formatChunkByteArray, 40));
+    REQUIRE_THROWS_WITH(
+        parseFormatInfoChunk(formatChunkStream, utils::fourCC("fmt "), 40),
+        "unsupported extensible subformat");
+  }
+}
+
 TEST_CASE("chna_chunk") {
   // basic test
   {
@@ -564,4 +635,3 @@ TEST_CASE("label_chunk") {
     REQUIRE(labelChunk->label() == "Test");  // padding should be ignored
   }
 }
-
