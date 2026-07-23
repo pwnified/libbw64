@@ -7,10 +7,15 @@
  *
  */
 #pragma once
-#include "bw64.hpp"
-#include <vector>
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <memory>
+#include <ostream>
+#include <stdexcept>
 #include <string>
-#include <cstring>
+#include <vector>
+#include "chunks.hpp"
 
 namespace bw64 {
 
@@ -56,7 +61,7 @@ public:
   }
 
   void write(std::ostream& stream) const override {
-    uint32_t numCuePoints = static_cast<uint32_t>(cuePoints_.size());
+    uint32_t numCuePoints = utils::safeCast<uint32_t>(cuePoints_.size());
     utils::writeValue(stream, numCuePoints);
 
     for (const auto& cue : cuePoints_) {
@@ -84,6 +89,10 @@ public:
 
   // Add a cue point with optional label
   void addCuePoint(uint32_t id, uint64_t position, const std::string& label = "") {
+    if (position > (std::numeric_limits<uint32_t>::max)()) {
+      throw std::runtime_error("Cue point position exceeds UINT32_MAX");
+    }
+
     auto it = std::find_if(cuePoints_.begin(), cuePoints_.end(),
                            [id](const CuePoint& cp) { return cp.id == id; });
     if (it != cuePoints_.end()) {
@@ -221,7 +230,7 @@ public:
       utils::writeValue(stream, chunk->id());
 
       // chunk size
-      uint32_t chunkSize = static_cast<uint32_t>(chunk->size());
+      uint32_t chunkSize = utils::safeCast<uint32_t>(chunk->size());
       utils::writeValue(stream, chunkSize);
 
       // chunk data

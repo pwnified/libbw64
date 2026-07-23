@@ -156,10 +156,25 @@ namespace bw64 {
     uint16_t numTracks;
     utils::readValue(stream, numTracks);
     utils::readValue(stream, numUids);
+    if ((size - 4u) % 40u != 0u) {
+      throw std::runtime_error("chna chunk has incomplete audioID data");
+    }
+    const uint64_t audioIdSlots = (size - 4u) / 40u;
+    if (audioIdSlots < numUids) {
+      throw std::runtime_error("chna chunk has fewer slots than numUids");
+    }
     auto chnaChunk = std::make_shared<ChnaChunk>();
     for (int i = 0; i < numUids; ++i) {
       auto audioId = parseAudioId(stream);
       chnaChunk->addAudioId(audioId);
+    }
+    const uint64_t unusedBytes = (audioIdSlots - numUids) * 40u;
+    if (unusedBytes != 0u) {
+      stream.seekg(utils::safeCast<std::streamoff>(unusedBytes),
+                   std::ios::cur);
+      if (!stream.good()) {
+        throw std::runtime_error("file error while seeking past CHNA slots");
+      }
     }
 
     if (chnaChunk->numUids() != numUids) {
@@ -195,10 +210,10 @@ namespace bw64 {
     uint32_t tableLength;
     uint64_t bw64Size;
     uint64_t dataSize;
-    uint64_t dummySize;
+    uint64_t sampleCountOrDummy;
     utils::readValue(stream, bw64Size);
     utils::readValue(stream, dataSize);
-    utils::readValue(stream, dummySize);
+    utils::readValue(stream, sampleCountOrDummy);
     utils::readValue(stream, tableLength);
 
     const uint64_t minSize = headerLength + tableLength * tableEntryLength;
@@ -215,11 +230,35 @@ namespace bw64 {
       table[id] = size;
     }
     // skip junk data
-    stream.seekg(size - minSize, std::ios::cur);
+    stream.seekg(utils::safeCast<std::streamoff>(size - minSize),
+                 std::ios::cur);
     if (!stream.good())
       throw std::runtime_error("file error while seeking past ds64 chunk");
 
-    return std::make_shared<DataSize64Chunk>(bw64Size, dataSize, table);
+    return std::make_shared<DataSize64Chunk>(bw64Size, dataSize, table,
+                                             sampleCountOrDummy);
+  }
+
+  /// @brief Construct a FactChunk from an input stream.
+  inline std::shared_ptr<FactChunk> parseFactChunk(std::istream& stream,
+                                                   uint32_t id,
+                                                   uint64_t size) {
+    if (id != utils::fourCC("fact")) {
+      throw std::runtime_error("chunkId != 'fact'");
+    }
+    if (size < 4u) {
+      throw std::runtime_error("fact chunk is too small");
+    }
+
+    uint32_t sampleLength;
+    utils::readValue(stream, sampleLength);
+    if (size > 4u) {
+      stream.seekg(utils::safeCast<std::streamoff>(size - 4u), std::ios::cur);
+      if (!stream.good()) {
+        throw std::runtime_error("file error while seeking past fact data");
+      }
+    }
+    return std::make_shared<FactChunk>(sampleLength);
   }
 
   inline std::shared_ptr<DataChunk> parseDataChunk(std::istream& /* stream */,
@@ -251,11 +290,14 @@ namespace bw64 {
     uint32_t numCuePoints;
     bw64::utils::readValue(stream, numCuePoints);
 
-    if (size != 4 + numCuePoints * 24) {
+    const uint64_t expectedSize =
+        4u + static_cast<uint64_t>(numCuePoints) * 24u;
+    if (size != expectedSize) {
       throw std::runtime_error("Incorrect cue chunk size");
     }
 
     std::vector<CuePoint> cuePoints;
+    cuePoints.reserve(numCuePoints);
     for (uint32_t i = 0; i < numCuePoints; i++) {
       CuePoint cue;
       bw64::utils::readValue(stream, cue.id);
@@ -286,16 +328,16 @@ namespace bw64 {
     bw64::utils::readValue(stream, cuePointId);
 
     // Read the null-terminated string
-    std::string label;
-    label.resize(size - 4); // Allocate space for the string excluding the cue point ID
+    const size_t labelBytes = utils::safeCast<size_t>(size - 4u);
+    std::string label(labelBytes, '\0');
+    utils::readChunk(stream, &label[0], labelBytes);
 
-    stream.read(&label[0], size - 4);
-
-    // Remove null terminator and any extra padding
+    // Remove the required null terminator and any extra payload bytes.
     size_t nullPos = label.find('\0');
-    if (nullPos != std::string::npos) {
-      label.resize(nullPos);
+    if (nullPos == std::string::npos) {
+      throw std::runtime_error("Label chunk is not null terminated");
     }
+    label.resize(nullPos);
 
     return std::make_shared<LabelChunk>(cuePointId, label);
   }
@@ -319,28 +361,36 @@ namespace bw64 {
     uint64_t bytesRead = 4; // Already got the list type (4 bytes)
 
     while (bytesRead < size) {
+      if (size - bytesRead < 8u) {
+        throw std::runtime_error("LIST sub-chunk header exceeds LIST size");
+      }
+
       uint32_t subChunkId;
       uint32_t subChunkSize;
 
       utils::readValue(stream, subChunkId);
       utils::readValue(stream, subChunkSize);
       bytesRead += 8; // 4 bytes for each
+      const uint64_t paddedSubChunkSize =
+          static_cast<uint64_t>(subChunkSize) + (subChunkSize & 1u);
+      if (paddedSubChunkSize > size - bytesRead) {
+        throw std::runtime_error("LIST sub-chunk exceeds LIST size");
+      }
 
       std::shared_ptr<Chunk> subChunk;
       if (subChunkId == utils::fourCC("labl")) {
         subChunk = parseLabelChunk(stream, subChunkId, subChunkSize);
-        bytesRead += subChunkSize;
       } else {
-        // Unknown chunks
-        stream.seekg(subChunkSize, std::ios::cur);
-        subChunk = std::make_shared<UnknownChunk>(subChunkId);
-        bytesRead += subChunkSize;
+        subChunk =
+            std::make_shared<UnknownChunk>(stream, subChunkId, subChunkSize);
       }
+      bytesRead += subChunkSize;
 
       subChunks.push_back(subChunk);
 
       if (subChunkSize % 2 == 1) {
-        stream.seekg(1, std::ios::cur);
+        char padding;
+        utils::readValue(stream, padding);
         bytesRead += 1;
       }
     }
@@ -361,6 +411,8 @@ namespace bw64 {
       return parseDataSize64Chunk(stream, header.id, header.size);
     } else if (header.id == utils::fourCC("fmt ")) {
       return parseFormatInfoChunk(stream, header.id, header.size);
+    } else if (header.id == utils::fourCC("fact")) {
+      return parseFactChunk(stream, header.id, header.size);
     } else if (header.id == utils::fourCC("axml")) {
       return parseAxmlChunk(stream, header.id, header.size);
     } else if (header.id == utils::fourCC("chna")) {

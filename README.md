@@ -174,7 +174,26 @@ auto outFile = bw64::writeFile(argv[1], 8, 48000, format);
 
 For extensible formats, `channelMask` is written verbatim. In particular, a
 zero mask remains zero and libbw64 does not infer speaker positions from the
-channel count.
+channel count. `classifyChannelMask()` can distinguish direct-out, exact-bed,
+partial, and unknown-bit masks without changing the stored value.
+
+IEEE-float writers emit and finalize the required `fact` chunk. Float and
+WAVE-format-extensible files promote to RF64 if they exceed RIFF's 4 GB limit;
+BW64 promotion is restricted to non-extensible PCM.
+
+CHNA metadata is never generated automatically. Supply a genuine ADM
+`ChnaChunk` explicitly to `writeFile()` (or in the writer's pre-data chunks).
+Marker storage is dynamic: `maxMarkers` is retained only for source
+compatibility, and `cue `/`LIST` chunks are appended safely when the writer is
+closed.
+
+Packed raw samples, including 24-bit PCM, can be transferred with checked byte
+views:
+
+```cpp
+writer->writeRaw(bw64::ConstByteSpan(bytes.data(), bytes.size()), frames);
+reader->readRaw(bw64::ByteSpan(bytes.data(), bytes.size()), frames);
+```
 
 ### More examples
 

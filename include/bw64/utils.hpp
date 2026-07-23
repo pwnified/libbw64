@@ -4,15 +4,67 @@
  * Collection of helper functions.
  */
 #pragma once
+#include <cstddef>
 #include <cmath>
-#include <sstream>
-#include <stdexcept>
+#include <cstring>
+#include <istream>
 #include <limits>
 #include <memory>
+#include <ostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <stdint.h>
 
 namespace bw64 {
+  /// @brief Mutable view over a caller-owned byte buffer.
+  struct ByteSpan {
+    ByteSpan(void* data, size_t size)
+        : data(static_cast<char*>(data)), size(size) {}
+
+    char* data;
+    size_t size;
+  };
+
+  /// @brief Read-only view over a caller-owned byte buffer.
+  struct ConstByteSpan {
+    ConstByteSpan(const void* data, size_t size)
+        : data(static_cast<const char*>(data)), size(size) {}
+    ConstByteSpan(const ByteSpan& span) : data(span.data), size(span.size) {}
+
+    const char* data;
+    size_t size;
+  };
+
+  /// Microsoft-defined individual speaker-position bits in dwChannelMask.
+  constexpr uint32_t WAVE_SPEAKER_POSITION_MASK = 0x0003ffffu;
+
+  enum class ChannelMaskClassification {
+    DirectOut,
+    ExactBed,
+    Partial,
+    UnknownBits
+  };
+
+  /// @brief Classify a WAVE extensible channel mask without changing it.
+  inline ChannelMaskClassification classifyChannelMask(uint16_t channels,
+                                                        uint32_t mask) {
+    if (mask == 0u) {
+      return ChannelMaskClassification::DirectOut;
+    }
+    if ((mask & ~WAVE_SPEAKER_POSITION_MASK) != 0u) {
+      return ChannelMaskClassification::UnknownBits;
+    }
+
+    uint32_t setBits = 0u;
+    for (uint32_t remaining = mask; remaining != 0u; remaining >>= 1u) {
+      setBits += remaining & 1u;
+    }
+    return setBits == channels ? ChannelMaskClassification::ExactBed
+                               : ChannelMaskClassification::Partial;
+  }
+
   namespace utils {
 
     /// @brief Convert char array chunkIds to uint32_t

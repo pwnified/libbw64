@@ -1,7 +1,8 @@
 #include <catch2/catch.hpp>
 #include <fstream>
-#include <sstream>
+#include <limits>
 #include <random>
+#include <sstream>
 #include "bw64/bw64.hpp"
 
 using namespace bw64;
@@ -239,20 +240,9 @@ TEST_CASE("write_read_riff_header") {
   writeRandom("write_read_riff_header.wav", 32, frames);
   auto bw64File = readFile("write_read_riff_header.wav");
   REQUIRE(bw64File->fileFormat() == utils::fourCC("RIFF"));
-  /**
-   * 'WAVE' chunk header  :      4 bytes
-   * 'JUNK' chunk header  :      8 bytes
-   * 'JUNK' chunk payload :     40 bytes
-   * 'fmt ' chunk header  :      8 bytes
-   * 'fmt ' chunk payload :     16 bytes
-   * 'chna' chunk header  :      8 bytes
-   * 'chna' chunk payload : 40.964 bytes (1024 * 40 bytes per UID + 4 bytes
-   * (numTracks/numUIDs) 'data' chunk header  :      8 bytes 'data' chunk
-   * payload : 19.200 bytes (2 channels * 2 bytes per samples * 4800 frames)
-   * --------------------------------------------------------------------------
-   *                        60256 bytes
-   */
-  REQUIRE(bw64File->fileSize() == 60256);
+  // RIFF size excludes the 8-byte RIFF ID/size prefix. No CHNA reservation is
+  // present unless the caller explicitly supplies CHNA metadata.
+  REQUIRE(bw64File->fileSize() == 19284);
 }
 
 TEST_CASE("write_read_96000") {
@@ -399,6 +389,71 @@ class MegaChunk : public Chunk {
   uint64_t size_;
 };
 
+/// A logically large chunk backed by a sparse file hole for fast tests.
+class SparseChunk : public Chunk {
+ public:
+  SparseChunk(uint32_t id, uint64_t size) : id_(id), size_(size) {}
+
+  uint32_t id() const override { return id_; }
+  uint64_t size() const override { return size_; }
+
+  void write(std::ostream& stream) const override {
+    if (size_ == 0u) return;
+    stream.seekp(utils::safeCast<std::streamoff>(size_ - 1u), std::ios::cur);
+    utils::writeValue(stream, '\0');
+  }
+
+ private:
+  uint32_t id_;
+  uint64_t size_;
+};
+
+TEST_CASE("large_extensible_float_promotes_to_rf64") {
+  const std::string filename = "large_extensible_float_rf64.wav";
+  FormatDescriptor format(SampleEncoding::IeeeFloat, 32u, 32u, true, 0u,
+                          LargeFileContainer::Rf64);
+
+  {
+    Bw64Writer writer(filename.c_str(), 2u, 48000u, format);
+    float frame[2] = {0.0f, 0.0f};
+    writer.write(frame, 1u);
+    writer.postDataChunk(std::make_shared<SparseChunk>(
+        utils::fourCC("sprs"), 0x100000000ull));
+    writer.close();
+  }
+
+  {
+    std::ifstream stream(filename.c_str(), std::ios::binary);
+    uint32_t riffId;
+    uint32_t riffSize;
+    uint32_t waveId;
+    uint32_t ds64Id;
+    uint32_t ds64Size;
+    uint64_t size64;
+    uint64_t dataSize64;
+    uint64_t sampleCount64;
+    utils::readValue(stream, riffId);
+    utils::readValue(stream, riffSize);
+    utils::readValue(stream, waveId);
+    utils::readValue(stream, ds64Id);
+    utils::readValue(stream, ds64Size);
+    utils::readValue(stream, size64);
+    utils::readValue(stream, dataSize64);
+    utils::readValue(stream, sampleCount64);
+
+    REQUIRE(riffId == utils::fourCC("RF64"));
+    REQUIRE(riffSize == (std::numeric_limits<uint32_t>::max)());
+    REQUIRE(waveId == utils::fourCC("WAVE"));
+    REQUIRE(ds64Id == utils::fourCC("ds64"));
+    REQUIRE(ds64Size == 40u);
+    REQUIRE(size64 > (std::numeric_limits<uint32_t>::max)());
+    REQUIRE(dataSize64 == 8u);
+    REQUIRE(sampleCount64 == 1u);
+  }
+
+  remove(filename.c_str());
+}
+
 TEST_CASE("write_too_many_big_chunks", "[.big]") {
   std::string filename = "too_many_big_chunks.wav";
 
@@ -529,14 +584,28 @@ TEST_CASE("invalid_write_format_does_not_create_file") {
                         "channel mask requires WAVE_FORMAT_EXTENSIBLE");
   }
 
+  SECTION("float cannot promote to BW64") {
+    FormatDescriptor format(SampleEncoding::IeeeFloat, 32u, 32u, false, 0u,
+                            LargeFileContainer::Bw64);
+    REQUIRE_THROWS_WITH(Bw64Writer(filename.c_str(), 2, 48000, format),
+                        "BW64 output supports only non-extensible PCM");
+  }
+
+  SECTION("extensible PCM cannot promote to BW64") {
+    FormatDescriptor format(SampleEncoding::Pcm, 24u, 24u, true, 0x3u,
+                            LargeFileContainer::Bw64);
+    REQUIRE_THROWS_WITH(Bw64Writer(filename.c_str(), 2, 48000, format),
+                        "BW64 output supports only non-extensible PCM");
+  }
+
   std::ifstream file(filename.c_str(), std::ios::binary);
   REQUIRE_FALSE(file.good());
 }
 
-TEST_CASE("write_with_correct_chna_chunk") {
+TEST_CASE("writer_emits_chna_only_when_explicitly_supplied") {
   std::string filename = "test_chna_tracks.wav";
 
-  // Test that CHNA chunk has correct number of tracks
+  // Marker helpers must not invent ADM channel allocation metadata.
   {
     auto writer = createSharedWriterWithMarkers(filename, 2, 48000, 24);
     std::vector<float> data(100 * 2, 0.0f);
@@ -547,13 +616,94 @@ TEST_CASE("write_with_correct_chna_chunk") {
   // Read back and verify CHNA chunk has correct track count
   {
     auto reader = readFile(filename);
-    REQUIRE(reader->channels() == 2);
+    REQUIRE_FALSE(reader->chnaChunk());
+    reader->close();
+  }
 
-    auto chnaChunk = reader->chnaChunk();
-    REQUIRE(chnaChunk);
-    REQUIRE(chnaChunk->numTracks() == 2);  // Should match channel count
-    REQUIRE(chnaChunk->numUids() == 2);    // Should have one UID per track
+  // Genuine caller-supplied CHNA remains supported.
+  {
+    std::vector<AudioId> audioIds;
+    audioIds.emplace_back(1u, "ATU_00000001", "AT_00031001_01",
+                          "AP_00031001");
+    audioIds.emplace_back(2u, "ATU_00000002", "AT_00031002_01",
+                          "AP_00031002");
+    auto chna = std::make_shared<ChnaChunk>(audioIds);
+    auto writer = writeFile(filename, 2, 48000, 24, chna);
+    writer->close();
+  }
 
+  {
+    auto reader = readFile(filename);
+    auto chna = reader->chnaChunk();
+    REQUIRE(chna);
+    REQUIRE(chna->numTracks() == 2u);
+    REQUIRE(chna->numUids() == 2u);
+    reader->close();
+  }
+
+  // The compatibility setter can still insert CHNA before data, but only
+  // before any audio has been written.
+  {
+    std::vector<AudioId> audioIds;
+    audioIds.emplace_back(1u, "ATU_00000001", "AT_00031001_01",
+                          "AP_00031001");
+    auto writer = writeFile(filename, 1, 48000, 24);
+    writer->setChnaChunk(std::make_shared<ChnaChunk>(audioIds));
+    float frame = 0.0f;
+    writer->write(&frame, 1u);
+    writer->close();
+  }
+
+  {
+    auto reader = readFile(filename);
+    uint64_t chnaPosition = 0u;
+    uint64_t dataPosition = 0u;
+    for (const auto& header : reader->chunks()) {
+      if (header.id == utils::fourCC("chna")) chnaPosition = header.position;
+      if (header.id == utils::fourCC("data")) dataPosition = header.position;
+    }
+    REQUIRE(chnaPosition > 0u);
+    REQUIRE(dataPosition > chnaPosition);
+    reader->close();
+  }
+
+  {
+    std::vector<AudioId> audioIds;
+    audioIds.emplace_back(1u, "ATU_00000001", "AT_00031001_01",
+                          "AP_00031001");
+    auto writer = writeFile(filename, 1, 48000, 24);
+    float frame = 0.0f;
+    writer->write(&frame, 1u);
+    REQUIRE_THROWS_WITH(
+        writer->setChnaChunk(std::make_shared<ChnaChunk>(audioIds)),
+        "chna chunk must be supplied before writing audio");
+    writer->close();
+  }
+
+  remove(filename.c_str());
+}
+
+TEST_CASE("raw_byte_spans_support_packed_24_bit_frames") {
+  const std::string filename = "raw_packed_24.wav";
+  const uint64_t frames = 3u;
+  std::vector<char> source{
+      0x01, 0x02, 0x03, 0x11, 0x12, 0x13,
+      0x21, 0x22, 0x23, 0x31, 0x32, 0x33,
+      0x41, 0x42, 0x43, 0x51, 0x52, 0x53};
+
+  {
+    auto writer = writeFile(filename, 2u, 48000u, 24u);
+    REQUIRE(writer->writeRaw(ConstByteSpan(source.data(), source.size()),
+                             frames) == frames);
+    writer->close();
+  }
+
+  {
+    auto reader = readFile(filename);
+    std::vector<char> destination(source.size(), 0);
+    REQUIRE(reader->readRaw(ByteSpan(destination.data(), destination.size()),
+                            frames) == frames);
+    REQUIRE(destination == source);
     reader->close();
   }
 

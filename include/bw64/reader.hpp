@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -13,8 +14,6 @@
 #include "chunks_ext.hpp"
 #include "utils.hpp"
 #include "parser.hpp"
-
-#include <iostream>
 
 namespace bw64 {
 
@@ -125,13 +124,17 @@ namespace bw64 {
 
     template <typename ChunkType>
     std::vector<std::shared_ptr<ChunkType>> chunksWithId(
-        const std::vector<Chunk>& chunks, uint32_t chunkId) const {
-      std::vector<char> foundChunks;
-      auto chunk =
-          std::copy_if(chunks.begin(), chunks.end(), foundChunks.begin(),
-                       [chunkId](const std::shared_ptr<Chunk> chunk) {
-                         return chunk->id() == chunkId;
-                       });
+        const std::vector<std::shared_ptr<Chunk>>& chunks,
+        uint32_t chunkId) const {
+      std::vector<std::shared_ptr<ChunkType>> foundChunks;
+      for (const auto& candidate : chunks) {
+        if (candidate && candidate->id() == chunkId) {
+          auto typed = std::dynamic_pointer_cast<ChunkType>(candidate);
+          if (typed) {
+            foundChunks.push_back(typed);
+          }
+        }
+      }
       return foundChunks;
     }
 
@@ -167,6 +170,10 @@ namespace bw64 {
      */
     std::shared_ptr<FormatInfoChunk> formatChunk() const {
       return chunk<FormatInfoChunk>(chunks_, utils::fourCC("fmt "));
+    }
+    /** @brief Get the optional non-PCM sample-count chunk. */
+    std::shared_ptr<FactChunk> factChunk() const {
+      return chunk<FactChunk>(chunks_, utils::fourCC("fact"));
     }
     /**
      * @brief Get 'data' chunk
@@ -292,13 +299,19 @@ namespace bw64 {
     template <typename T, typename std::enable_if<
                               std::is_floating_point<T>::value, int>::type = 0>
     uint64_t read(T* outBuffer, uint64_t frames) {
-      if (tell() + frames > numberOfFrames()) {
-        frames = numberOfFrames() - tell();
+      const uint64_t currentFrame = tell();
+      const uint64_t remainingFrames = numberOfFrames() - currentFrame;
+      if (frames > remainingFrames) {
+        frames = remainingFrames;
       }
 
       if (frames) {
-        rawDataBuffer_.resize(frames * blockAlignment());
-        fileStream_.read(rawDataBuffer_.data(), frames * blockAlignment());
+        if (!outBuffer) {
+          throw std::runtime_error("output buffer must not be null");
+        }
+        const uint64_t bytesToRead = dataBytesForFrames(frames);
+        rawDataBuffer_.resize(utils::safeCast<size_t>(bytesToRead));
+        fileStream_.read(rawDataBuffer_.data(), streamSize(bytesToRead));
         if (fileStream_.eof())
           throw std::runtime_error("file ended while reading frames");
         if (!fileStream_.good())
@@ -323,17 +336,34 @@ namespace bw64 {
      * @param[in]  frames    Number of frames to read
      *
      * @returns number of frames read
-     * @discussion outBuffer must match the wave formats internal
-     *   type (16, 24, or 32 bit), (int or float).
+     * `ByteSpan` is the preferred overload because it validates the caller's
+     * byte capacity, including for packed 24-bit samples.
      */
-    template <typename T>
-    uint64_t readRaw(T* outBuffer, uint64_t frames) {
-      if (frames > numberOfFrames() - tell()) {
-        frames = numberOfFrames() - tell();
+    uint64_t readRaw(ByteSpan outBuffer, uint64_t frames) {
+      const uint64_t remainingFrames = numberOfFrames() - tell();
+      if (frames > remainingFrames) {
+        frames = remainingFrames;
       }
+      const uint64_t bytesToRead = dataBytesForFrames(frames);
+      if (bytesToRead > outBuffer.size) {
+        throw std::runtime_error("raw output buffer is too small");
+      }
+      return readRaw(outBuffer.data, frames);
+    }
 
+    /// @brief Backwards-compatible untyped raw-frame reader.
+    uint64_t readRaw(void* outBuffer, uint64_t frames) {
+      const uint64_t remainingFrames = numberOfFrames() - tell();
+      if (frames > remainingFrames) {
+        frames = remainingFrames;
+      }
       if (frames) {
-        fileStream_.read((char *)outBuffer, frames * blockAlignment());
+        if (!outBuffer) {
+          throw std::runtime_error("raw output buffer must not be null");
+        }
+        const uint64_t bytesToRead = dataBytesForFrames(frames);
+        fileStream_.read(static_cast<char*>(outBuffer),
+                         streamSize(bytesToRead));
         if (fileStream_.eof())
           throw std::runtime_error("file ended while reading frames");
         if (!fileStream_.good())
@@ -349,7 +379,16 @@ namespace bw64 {
      * @returns current frame position of the dataChunk
      */
     uint64_t tell() {
-      return ((uint64_t)fileStream_.tellg() - dataStartPos()) / formatChunk()->blockAlignment();
+      const std::streampos position = fileStream_.tellg();
+      if (position == std::streampos(-1)) {
+        throw std::runtime_error("file error while getting position");
+      }
+      const uint64_t absolute = utils::safeCast<uint64_t>(
+          static_cast<std::streamoff>(position));
+      if (absolute < dataStartPos()) {
+        throw std::runtime_error("file position is before data chunk");
+      }
+      return (absolute - dataStartPos()) / formatChunk()->blockAlignment();
     }
 
     /**
@@ -471,7 +510,12 @@ namespace bw64 {
     ChunkHeader parseHeader() {
       uint32_t chunkId;
       uint32_t chunkSize;
-      uint64_t position = fileStream_.tellg();
+      const std::streampos streamPosition = fileStream_.tellg();
+      if (streamPosition == std::streampos(-1)) {
+        throw std::runtime_error("file error while getting chunk position");
+      }
+      const uint64_t position = utils::safeCast<uint64_t>(
+          static_cast<std::streamoff>(streamPosition));
       utils::readValue(fileStream_, chunkId);
       utils::readValue(fileStream_, chunkSize);
       uint64_t chunkSize64 = getChunkSize64(chunkId, chunkSize);
@@ -558,6 +602,18 @@ namespace bw64 {
           cuePoint.label = it->second;
         }
       }
+    }
+
+    uint64_t dataBytesForFrames(uint64_t frames) const {
+      const uint64_t frameSize = blockAlignment();
+      if (frames > (std::numeric_limits<uint64_t>::max)() / frameSize) {
+        throw std::runtime_error("frame byte count overflow");
+      }
+      return frames * frameSize;
+    }
+
+    static std::streamsize streamSize(uint64_t bytes) {
+      return utils::safeCast<std::streamsize>(bytes);
     }
 
     std::ifstream fileStream_;

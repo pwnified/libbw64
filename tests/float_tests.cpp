@@ -54,6 +54,8 @@ TEST_CASE("float_format_write_read") {
 
       auto fmt = reader->formatChunk();
       REQUIRE(fmt->isFloat() == true);
+      REQUIRE(reader->factChunk());
+      REQUIRE(reader->factChunk()->sampleLength() == numFrames);
 
       std::vector<float> readBuffer(channels * numFrames);
       uint64_t readFrames = reader->read(readBuffer.data(), numFrames);
@@ -96,6 +98,8 @@ TEST_CASE("float_format_write_read") {
       REQUIRE(fmt->isFloat() == true);
       REQUIRE(fmt->extraData() != nullptr);
       REQUIRE(guidsEqual(fmt->extraData()->subFormat(), KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) == true);
+      REQUIRE(reader->factChunk());
+      REQUIRE(reader->factChunk()->sampleLength() == numFrames);
 
       reader->close();
     }
@@ -103,6 +107,20 @@ TEST_CASE("float_format_write_read") {
     // Clean up the test file
     std::remove(tempFile.c_str());
   }
+}
+
+TEST_CASE("pcm_writer_does_not_emit_fact") {
+  const std::string tempFile = "pcm_without_fact.wav";
+  {
+    auto writer = writeFile(tempFile, 2u, 48000u, 24u);
+    writer->close();
+  }
+  {
+    auto reader = readFile(tempFile);
+    REQUIRE_FALSE(reader->factChunk());
+    reader->close();
+  }
+  std::remove(tempFile.c_str());
 }
 
 

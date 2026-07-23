@@ -237,6 +237,19 @@ TEST_CASE("marker_api_test") {
         // Open the file for reading
         auto reader = bw64::readFile(tempFile);
 
+        uint64_t dataPosition = 0u;
+        uint64_t cuePosition = 0u;
+        uint64_t listPosition = 0u;
+        for (const auto& header : reader->chunks()) {
+            REQUIRE(header.id != 0u);
+            if (header.id == bw64::utils::fourCC("data")) dataPosition = header.position;
+            if (header.id == bw64::utils::fourCC("cue ")) cuePosition = header.position;
+            if (header.id == bw64::utils::fourCC("LIST")) listPosition = header.position;
+        }
+        REQUIRE(dataPosition > 0u);
+        REQUIRE(cuePosition > dataPosition);
+        REQUIRE(listPosition > cuePosition);
+
         // Get all markers
         auto markers = reader->getMarkers();
         REQUIRE(markers.size() == 3);
@@ -371,7 +384,7 @@ TEST_CASE("marker_api_advanced_test") {
     std::remove(tempFile.c_str());
 }
 
-TEST_CASE("exceed_max_markers_test") {
+TEST_CASE("legacy_max_markers_no_longer_limits_or_reserves_space") {
     std::string tempFile = "exceed_max_markers_test.wav";
     std::remove(tempFile.c_str());
 
@@ -401,8 +414,11 @@ TEST_CASE("exceed_max_markers_test") {
         // Write audio data
         writer->write(audioData.data(), numFrames);
 
-        // Try to close the file (should throw because the cue chunk is full)
-        REQUIRE_THROWS_AS(writer->close(), std::runtime_error);
+        writer->close();
+
+        auto reader = bw64::readFile(tempFile);
+        REQUIRE(reader->getMarkers().size() == 3u);
+        reader->close();
     }
     catch (const std::exception& e) {
         FAIL("Exception occurred: " << e.what());
@@ -470,7 +486,7 @@ TEST_CASE("marker_sort_order_test") {
 	std::remove(tempFile.c_str());
 }
 
-TEST_CASE("marker_api_no_cue_chunk_test") {
+TEST_CASE("markers_do_not_require_preallocated_cue_space") {
     std::string tempFile = "marker_api_no_cue_chunk_test.wav";
     std::remove(tempFile.c_str());
 
@@ -489,8 +505,12 @@ TEST_CASE("marker_api_no_cue_chunk_test") {
         auto writer = bw64::createSharedWriterWithMaxMarkers(
             tempFile, channels, sampleRate, bitDepth, false, false, 0, 0);
 
-        // Try to add a marker (should throw because no cue chunk was pre-allocated)
-        REQUIRE_THROWS_AS(writer->addMarker(1, sampleRate * 0.5, "Marker 1"), std::runtime_error);
+        writer->addMarker(1, sampleRate * 0.5, "Marker 1");
+        REQUIRE_THROWS_WITH(
+            writer->addMarker(2,
+                              static_cast<uint64_t>(UINT32_MAX) + 1u,
+                              "Too far"),
+            "Cue point position exceeds UINT32_MAX");
 
         // Write audio data
         writer->write(audioData.data(), numFrames);
@@ -499,14 +519,37 @@ TEST_CASE("marker_api_no_cue_chunk_test") {
         // Open the file for reading
         auto reader = bw64::readFile(tempFile);
 
-        // Get all markers (should be empty)
+        // The cue chunk is created at finalization only because a marker exists.
         auto markers = reader->getMarkers();
-        REQUIRE(markers.empty());
+        REQUIRE(markers.size() == 1u);
+        REQUIRE(markers[0].id == 1u);
 
         reader->close();
     }
     catch (const std::exception& e) {
         FAIL("Exception occurred: " << e.what());
+    }
+
+    std::remove(tempFile.c_str());
+}
+
+TEST_CASE("zero_markers_emit_no_cue_or_placeholder_chunks") {
+    const std::string tempFile = "zero_markers.wav";
+    std::remove(tempFile.c_str());
+
+    {
+        auto writer = bw64::createSharedWriterWithMaxMarkers(
+            tempFile, 1u, 48000u, 16u, false, false, 0u, 100u);
+        writer->close();
+    }
+
+    {
+        auto reader = bw64::readFile(tempFile);
+        REQUIRE_FALSE(reader->getCueChunk());
+        for (const auto& header : reader->chunks()) {
+            REQUIRE(header.id != 0u);
+        }
+        reader->close();
     }
 
     std::remove(tempFile.c_str());

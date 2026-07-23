@@ -115,6 +115,11 @@ TEST_CASE("format_info_chunk") {
         FormatInfoChunk(0xffff, 48000, 24),
         "channelCount and bitsPerSample would overflow blockAlignment");
   }
+  // bit depth must be validated before narrowing to the stored uint16 field
+  {
+    REQUIRE_THROWS_WITH(FormatInfoChunk(1u, 48000u, 65552u),
+                        "bitDepth not supported: 65552");
+  }
   // bytesPerSecond error
   {
     REQUIRE_THROWS_WITH(FormatInfoChunk(0x1000, 0xffffffff, 16),
@@ -269,6 +274,37 @@ TEST_CASE("format_info_chunk_extensible_subformat_guid") {
   }
 }
 
+TEST_CASE("format_info_chunk_valid_bits_and_float_constraints") {
+  SECTION("valid bits must be nonzero and fit the container") {
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(
+            2u, 48000u, 24u,
+            std::make_shared<ExtraData>(0u, 0u, KSDATAFORMAT_SUBTYPE_PCM),
+            WAVE_FORMAT_EXTENSIBLE),
+        "valid bits must be between 1 and container bits");
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(
+            2u, 48000u, 24u,
+            std::make_shared<ExtraData>(25u, 0u, KSDATAFORMAT_SUBTYPE_PCM),
+            WAVE_FORMAT_EXTENSIBLE),
+        "valid bits must be between 1 and container bits");
+  }
+
+  SECTION("IEEE float must be 32-bit with 32 valid bits") {
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(2u, 48000u, 24u, nullptr,
+                        WAVE_FORMAT_IEEE_FLOAT),
+        "IEEE float supports only 32 container bits");
+    REQUIRE_THROWS_WITH(
+        FormatInfoChunk(
+            2u, 48000u, 32u,
+            std::make_shared<ExtraData>(24u, 0u,
+                                        KSDATAFORMAT_SUBTYPE_IEEE_FLOAT),
+            WAVE_FORMAT_EXTENSIBLE),
+        "IEEE float valid bits must equal container bits");
+  }
+}
+
 TEST_CASE("chna_chunk") {
   // basic test
   {
@@ -316,6 +352,17 @@ TEST_CASE("chna_chunk") {
     REQUIRE(chnaChunkReread->audioIds()[2].uid() == "ATU_00000003");
     REQUIRE(chnaChunkReread->audioIds()[2].trackRef() == "AT_00031003_01");
     REQUIRE(chnaChunkReread->audioIds()[2].packRef() == "AP_00031003");
+  }
+  {  // reserved zero-filled slots beyond numUids are legal
+    std::stringstream written;
+    ChnaChunk chunk({
+        AudioId(1, "ATU_00000001", "AT_00031001_01", "AP_00031001")});
+    chunk.write(written);
+    const std::string withReservedSlot = written.str() + std::string(40, '\0');
+    std::istringstream stream(withReservedSlot);
+    auto reread = parseChnaChunk(stream, utils::fourCC("chna"), 84u);
+    REQUIRE(reread->numTracks() == 1u);
+    REQUIRE(reread->numUids() == 1u);
   }
   // throws
   {  // wrong fourCC
@@ -395,6 +442,7 @@ TEST_CASE("ds64_chunk") {
     std::stringstream stream;
     auto dataSize64Chunk =
         std::make_shared<DataSize64Chunk>(987654321, 123456789);
+    dataSize64Chunk->sampleCount(456789);
     auto axmlId = utils::fourCC("axml");
     dataSize64Chunk->setChunkSize(axmlId, 654321);
     dataSize64Chunk->write(stream);
@@ -402,6 +450,7 @@ TEST_CASE("ds64_chunk") {
         parseDataSize64Chunk(stream, utils::fourCC("ds64"), 40);
     REQUIRE(dataSize64ChunkReread->bw64Size() == 987654321);
     REQUIRE(dataSize64ChunkReread->dataSize() == 123456789);
+    REQUIRE(dataSize64ChunkReread->sampleCount() == 456789);
     REQUIRE(dataSize64ChunkReread->tableLength() == 1);
     REQUIRE(dataSize64ChunkReread->getChunkSize(axmlId) == 654321);
   }
@@ -422,6 +471,20 @@ TEST_CASE("ds64_chunk") {
         parseDataSize64Chunk(ds64ChunkStream, utils::fourCC("ds64"), 8),
         std::runtime_error);
   }
+}
+
+TEST_CASE("fact_chunk") {
+  std::stringstream stream;
+  auto fact = std::make_shared<FactChunk>(123456u);
+  fact->write(stream);
+
+  auto reread = parseFactChunk(stream, utils::fourCC("fact"), 4u);
+  REQUIRE(reread->sampleLength() == 123456u);
+
+  std::istringstream tooSmall(std::string("\0\0\0", 3));
+  REQUIRE_THROWS_WITH(
+      parseFactChunk(tooSmall, utils::fourCC("fact"), 3u),
+      "fact chunk is too small");
 }
 
 TEST_CASE("axml_chunk") {
@@ -576,6 +639,13 @@ TEST_CASE("cue_chunk") {
     REQUIRE_THROWS_AS(parseCueChunk(cueChunkStream, utils::fourCC("cue "), 28),
                       std::runtime_error);
   }
+  {  // count multiplication must not wrap before size validation
+    const char* cueChunkByteArray = "\x00\x00\x00\x20";
+    std::istringstream cueChunkStream(std::string(cueChunkByteArray, 4));
+    REQUIRE_THROWS_WITH(
+        parseCueChunk(cueChunkStream, utils::fourCC("cue "), 4),
+        "Incorrect cue chunk size");
+  }
 }
 
 TEST_CASE("label_chunk") {
@@ -614,6 +684,16 @@ TEST_CASE("label_chunk") {
     REQUIRE_THROWS_AS(parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 4),
                       std::runtime_error);
   }
+  {  // label text must include a terminator inside the chunk
+    const char* labelChunkByteArray =
+        "\x01\x00\x00\x00"
+        "Test";
+    std::istringstream labelChunkStream(
+        std::string(labelChunkByteArray, 8));
+    REQUIRE_THROWS_WITH(
+        parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 8),
+        "Label chunk is not null terminated");
+  }
   // test with empty label (should still have null terminator)
   {
     const char* labelChunkByteArray =
@@ -633,5 +713,55 @@ TEST_CASE("label_chunk") {
     auto labelChunk = parseLabelChunk(labelChunkStream, utils::fourCC("labl"), 11);
     REQUIRE(labelChunk->cuePointId() == 4);
     REQUIRE(labelChunk->label() == "Test");  // padding should be ignored
+  }
+}
+
+TEST_CASE("list_chunk_bounds_and_unknown_data") {
+  SECTION("preserves bounded unknown sub-chunks") {
+    std::stringstream stream;
+    utils::writeValue(stream, utils::fourCC("adtl"));
+    utils::writeValue(stream, utils::fourCC("note"));
+    utils::writeValue(stream, uint32_t{3});
+    stream.write("abc", 3);
+    utils::writeValue(stream, '\0');
+
+    auto list = parseListChunk(stream, utils::fourCC("LIST"), 16u);
+    REQUIRE(list->subChunks().size() == 1u);
+    auto unknown =
+        std::dynamic_pointer_cast<UnknownChunk>(list->subChunks()[0]);
+    REQUIRE(unknown);
+    const std::vector<char> expected{'a', 'b', 'c'};
+    REQUIRE(unknown->data() == expected);
+  }
+
+  SECTION("rejects a truncated sub-chunk header") {
+    std::stringstream stream;
+    utils::writeValue(stream, utils::fourCC("adtl"));
+    utils::writeValue(stream, utils::fourCC("labl"));
+    REQUIRE_THROWS_WITH(
+        parseListChunk(stream, utils::fourCC("LIST"), 8u),
+        "LIST sub-chunk header exceeds LIST size");
+  }
+
+  SECTION("rejects a sub-chunk larger than its LIST") {
+    std::stringstream stream;
+    utils::writeValue(stream, utils::fourCC("adtl"));
+    utils::writeValue(stream, utils::fourCC("labl"));
+    utils::writeValue(stream, uint32_t{10});
+    REQUIRE_THROWS_WITH(
+        parseListChunk(stream, utils::fourCC("LIST"), 12u),
+        "LIST sub-chunk exceeds LIST size");
+  }
+
+  SECTION("rejects a missing odd-size padding byte") {
+    std::stringstream stream;
+    utils::writeValue(stream, utils::fourCC("adtl"));
+    utils::writeValue(stream, utils::fourCC("labl"));
+    utils::writeValue(stream, uint32_t{5});
+    utils::writeValue(stream, uint32_t{1});
+    utils::writeValue(stream, '\0');
+    REQUIRE_THROWS_AS(
+        parseListChunk(stream, utils::fourCC("LIST"), 18u),
+        std::runtime_error);
   }
 }

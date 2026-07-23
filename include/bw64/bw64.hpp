@@ -5,7 +5,6 @@
  * into your user code.
  */
 #pragma once
-#include <cstdio>
 #include <vector>
 #include "reader.hpp"
 #include "writer.hpp"
@@ -110,8 +109,7 @@ namespace bw64 {
  * @brief Create a BW64 file for writing
  *
  * Convenience function which accepts a vector of markers to add to the file.
- * The markers will be added to the file *before* the actual data chunk, which
- * is the recommended practice if all components are already known before writing
+ * Marker chunks are appended after the audio data when the writer is closed.
  *
  * @returns `shared_ptr` to a Bw64Writer instance that is ready to write samples
  */
@@ -126,26 +124,6 @@ namespace bw64 {
       const std::vector<CuePoint>& markers = {},
       std::vector<std::shared_ptr<Chunk>> preDataChunks = {}) {
 
-    bool gotChnaChunk = false;
-    for (auto chunk : preDataChunks) {
-      if (chunk->id() == utils::fourCC("chna")) {
-        gotChnaChunk = true;
-        break;
-      }
-    }
-    if (!gotChnaChunk) {
-      // Create a default CHNA chunk with one track per channel
-      std::vector<AudioId> audioIds;
-      for (uint16_t ch = 1; ch <= channels; ++ch) {
-        char uid[13];
-        char trackRef[16];
-        std::snprintf(uid, 13, "ATU_%08d", ch);
-        std::snprintf(trackRef, 16, "AT_000100%02d_01", ch);
-        audioIds.emplace_back(ch, std::string(uid), std::string(trackRef), "AP_00010001");
-      }
-      preDataChunks.push_back(std::make_shared<ChnaChunk>(audioIds));
-    }
-
     auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, (uint32_t)markers.size()));
 
     for (const auto& cue : markers) {
@@ -158,9 +136,8 @@ namespace bw64 {
 /**
  * @brief Create a BW64 file for writing
  *
- * Convenience function which specifies the maximum number of markers to add.
- * The markers will be added to the file *before* the actual data chunk, which
- * is the recommended practice if all components are already known before writing
+ * Backwards-compatible helper retaining the former maxMarkers argument.
+ * Marker storage is now dynamic, and marker chunks are appended after audio.
  *
  * @returns `shared_ptr` to a Bw64Writer instance that is ready to write samples
  */
@@ -174,26 +151,6 @@ namespace bw64 {
       uint32_t channelMask = 0,
       uint32_t maxMarkers = 0,
       std::vector<std::shared_ptr<Chunk>> preDataChunks = {}) {
-
-    bool gotChnaChunk = false;
-    for (auto chunk : preDataChunks) {
-      if (chunk->id() == utils::fourCC("chna")) {
-        gotChnaChunk = true;
-        break;
-      }
-    }
-    if (!gotChnaChunk) {
-      // Create a default CHNA chunk with one track per channel
-      std::vector<AudioId> audioIds;
-      for (uint16_t ch = 1; ch <= channels; ++ch) {
-        char uid[13];
-        char trackRef[16];
-        std::snprintf(uid, 13, "ATU_%08d", ch);
-        std::snprintf(trackRef, 16, "AT_000100%02d_01", ch);
-        audioIds.emplace_back(ch, std::string(uid), std::string(trackRef), "AP_00010001");
-      }
-      preDataChunks.push_back(std::make_shared<ChnaChunk>(audioIds));
-    }
 
     auto writer = std::shared_ptr<Bw64Writer>(new Bw64Writer(filename.c_str(), channels, sampleRate, bitDepth, preDataChunks, useExtensible, useFloat, channelMask, maxMarkers));
     return writer;

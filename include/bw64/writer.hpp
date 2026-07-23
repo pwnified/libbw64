@@ -16,8 +16,6 @@
 
 namespace bw64 {
 
-  const uint32_t MAX_NUMBER_OF_UIDS = 1024;
-
   /// @brief Encoding of samples stored in the data chunk.
   enum class SampleEncoding {
     Pcm,
@@ -85,7 +83,8 @@ namespace bw64 {
      *
      * If you need any chunks to appear *before* the data chunk, include them in
      * the `preDataChunks`. They will be written directly after opening the
-     * file.
+     * file. Cue chunks are the exception: they are retained in memory and
+     * appended safely after audio during finalization.
      *
      * @note For convenience, you might consider using the `writeFile` helper
      * function.
@@ -97,7 +96,8 @@ namespace bw64 {
                std::vector<std::shared_ptr<Chunk>> preDataChunks = {},
                uint32_t maxMarkers = 0)
         : formatDescriptor_(format),
-          useRf64Id_(format.largeFileContainer == LargeFileContainer::Rf64) {
+          useRf64Id_(format.largeFileContainer == LargeFileContainer::Rf64),
+          cueChunk_(std::make_shared<CueChunk>()) {
       // Construct and validate the format before opening (and potentially
       // truncating) the destination file.
       auto formatChunk = makeFormatChunk(channels, sampleRate, format);
@@ -115,23 +115,34 @@ namespace bw64 {
 
       writeChunk(formatChunk);
 
+      if (formatChunk->isFloat()) {
+        factChunk_ = std::make_shared<FactChunk>();
+        writeChunk(factChunk_);
+      }
+
       for (auto chunk : preDataChunks) {
-        writeChunk(chunk);
+        if (!chunk) {
+          continue;
+        }
+        if (chunk->id() == utils::fourCC("cue ")) {
+          auto suppliedCue = std::dynamic_pointer_cast<CueChunk>(chunk);
+          if (!suppliedCue) {
+            throw std::runtime_error("cue chunk has unexpected type");
+          }
+          for (const auto& cue : suppliedCue->cuePoints()) {
+            cueChunk_->addCuePoint(cue);
+          }
+        } else if (chunk->id() == utils::fourCC("fact") && factChunk_) {
+          throw std::runtime_error(
+              "fact chunk is managed automatically for IEEE float");
+        } else {
+          writeChunk(chunk);
+        }
       }
 
-      // Write CueChunk placeholder
-      if (maxMarkers > 0) {
-        std::vector<CuePoint> emptyCuePoints(maxMarkers, CuePoint{});
-        auto cueChunk = std::make_shared<CueChunk>(emptyCuePoints);
-        writeChunk(cueChunk);
-        cueChunk->clearCuePoints();
-      }
-
-      // Write CHNA chunk placeholder
-      if (!chnaChunk()) {
-        writeChunkPlaceholder(utils::fourCC("chna"),
-                              MAX_NUMBER_OF_UIDS * 40 + 4);
-      }
+      // Retained in the legacy API for source compatibility. Marker chunks
+      // now grow in memory and are appended during close().
+      (void)maxMarkers;
 
       // Write the data chunk header
       auto dataChunk = std::make_shared<DataChunk>();
@@ -172,7 +183,8 @@ namespace bw64 {
 
       try {
         finalizeDataChunk();
-        finalizeCueChunk(); // finalize cue chunk before writing post data chunks
+        finalizeFactChunk();
+        finalizeCueChunk();
         for (auto chunk : postDataChunks_) {
           writeChunk(chunk);
         }
@@ -213,13 +225,17 @@ namespace bw64 {
 
     template <typename ChunkType>
     std::vector<std::shared_ptr<ChunkType>> chunksWithId(
-        const std::vector<Chunk>& chunks, uint32_t chunkId) const {
-      std::vector<char> foundChunks;
-      auto chunk =
-          std::copy_if(chunks.begin(), chunks.end(), foundChunks.begin(),
-                       [chunkId](const std::shared_ptr<Chunk> chunk) {
-                         return chunk->id() == chunkId;
-                       });
+        const std::vector<std::shared_ptr<Chunk>>& chunks,
+        uint32_t chunkId) const {
+      std::vector<std::shared_ptr<ChunkType>> foundChunks;
+      for (const auto& candidate : chunks) {
+        if (candidate && candidate->id() == chunkId) {
+          auto typed = std::dynamic_pointer_cast<ChunkType>(candidate);
+          if (typed) {
+            foundChunks.push_back(typed);
+          }
+        }
+      }
       return foundChunks;
     }
 
@@ -247,6 +263,7 @@ namespace bw64 {
     std::shared_ptr<DataChunk> dataChunk() const {
       return chunk<DataChunk>(chunks_, utils::fourCC("data"));
     }
+    std::shared_ptr<FactChunk> factChunk() const { return factChunk_; }
     std::shared_ptr<ChnaChunk> chnaChunk() const {
       return chunk<ChnaChunk>(chunks_, utils::fourCC("chna"));
     }
@@ -254,7 +271,7 @@ namespace bw64 {
       return chunk<AxmlChunk>(chunks_, utils::fourCC("axml"));
     }
     std::shared_ptr<CueChunk> cueChunk() const {
-      return chunk<CueChunk>(chunks_, utils::fourCC("cue "));
+      return cueChunk_;
     }
 
     /// @brief Check if file is bigger than 4GB and therefore a BW64 file
@@ -271,20 +288,51 @@ namespace bw64 {
 
     /// @brief Use RF64 ID for outer chunk (when >4GB) rather than BW64
     void useRf64Id(bool state) {
+      if (!state &&
+          (formatDescriptor_.sampleEncoding != SampleEncoding::Pcm ||
+           formatDescriptor_.extensible)) {
+        throw std::runtime_error(
+            "float and extensible formats must promote to RF64");
+      }
       useRf64Id_ = state;
       formatDescriptor_.largeFileContainer =
           state ? LargeFileContainer::Rf64 : LargeFileContainer::Bw64;
     }
 
     void setChnaChunk(std::shared_ptr<ChnaChunk> chunk) {
-      if (chunk->numUids() > 1024) {
-        // TODO: make pre data chunk chna chunk a JUNK chunk and add chnaChunk
-        // to postDataChunks_?
-        throw std::runtime_error("number of trackUids is > 1024");
+      if (!chunk) {
+        throw std::runtime_error("chna chunk must not be null");
       }
-      auto last_position = fileStream_.tellp();
-      overwriteChunk(utils::fourCC("chna"), chunk);
-      fileStream_.seekp(last_position);
+      if (chnaChunk()) {
+        throw std::runtime_error("chna chunk already supplied");
+      }
+      auto data = dataChunk();
+      if (!data || data->size() != 0u) {
+        throw std::runtime_error(
+            "chna chunk must be supplied before writing audio");
+      }
+
+      const uint64_t dataHeaderPosition =
+          chunkHeader(utils::fourCC("data")).position;
+      chunkHeaders_.erase(
+          std::remove_if(chunkHeaders_.begin(), chunkHeaders_.end(),
+                         [](const ChunkHeader& header) {
+                           return header.id == utils::fourCC("data");
+                         }),
+          chunkHeaders_.end());
+      chunks_.erase(
+          std::remove_if(chunks_.begin(), chunks_.end(),
+                         [&data](const std::shared_ptr<Chunk>& candidate) {
+                           return candidate == data;
+                         }),
+          chunks_.end());
+
+      fileStream_.seekp(utils::safeCast<std::streamoff>(dataHeaderPosition));
+      if (!fileStream_.good()) {
+        throw std::runtime_error("file error while inserting chna chunk");
+      }
+      writeChunk(chunk);
+      writeChunk(data);
     }
 
     void setAxmlChunk(std::shared_ptr<Chunk> chunk) {
@@ -344,10 +392,11 @@ namespace bw64 {
     }
 
 
-    /// @brief Update Cue chunk
+    /// @brief Append cue and associated label chunks after audio.
     void finalizeCueChunk() {
       auto cueChunkPtr = cueChunk();
       if (cueChunkPtr && !cueChunkPtr->cuePoints().empty()) {
+        writeChunk(cueChunkPtr);
         auto labels = cueChunkPtr->getLabels();
 
         // If we have labels, create a LIST chunk
@@ -359,12 +408,22 @@ namespace bw64 {
           }
 
           auto listChunk = std::make_shared<ListChunk>(utils::fourCC("adtl"), labelChunks);
-          postDataChunks_.push_back(listChunk);
+          writeChunk(listChunk);
         }
-
-        // Overwrite the cue chunk with its current content
-        overwriteChunk(utils::fourCC("cue "), cueChunkPtr);
       }
+    }
+
+    void finalizeFactChunk() {
+      if (!factChunk_) {
+        return;
+      }
+
+      const uint64_t frames = framesWritten();
+      factChunk_->sampleLength(
+          frames > (std::numeric_limits<uint32_t>::max)()
+              ? (std::numeric_limits<uint32_t>::max)()
+              : static_cast<uint32_t>(frames));
+      overwriteChunk(utils::fourCC("fact"), factChunk_);
     }
 
 
@@ -373,6 +432,9 @@ namespace bw64 {
       ds64Chunk->bw64Size(riffChunkSize());
       // write data size even if it's not too big
       ds64Chunk->dataSize(dataChunk()->size());
+      // RF64 uses this field as the 64-bit replacement for fact's sample
+      // count. BW64 defines it as a zero dummy value.
+      ds64Chunk->sampleCount(useRf64Id_ ? framesWritten() : 0u);
 
       for (auto& header : chunkHeaders_)
         if (header.size > UINT32_MAX)
@@ -458,8 +520,15 @@ namespace bw64 {
     template <typename T, typename std::enable_if<
                               std::is_floating_point<T>::value, int>::type = 0>
     uint64_t write(T* inBuffer, uint64_t frames) {
-      uint64_t bytesWritten = frames * formatChunk()->blockAlignment();
-      rawDataBuffer_.resize(bytesWritten);
+      if (frames == 0u) {
+        return 0u;
+      }
+      if (!inBuffer) {
+        throw std::runtime_error("input buffer must not be null");
+      }
+
+      const uint64_t bytesWritten = dataBytesForFrames(frames);
+      rawDataBuffer_.resize(utils::safeCast<size_t>(bytesWritten));
       if (formatChunk()->isFloat()) {
         utils::encodeFloatSamples(inBuffer, &rawDataBuffer_[0],
                                   frames * formatChunk()->channelCount(),
@@ -469,7 +538,10 @@ namespace bw64 {
                                 frames * formatChunk()->channelCount(),
                                 formatChunk()->bitsPerSample());
       }
-      fileStream_.write(&rawDataBuffer_[0], bytesWritten);
+      fileStream_.write(rawDataBuffer_.data(), streamSize(bytesWritten));
+      if (!fileStream_.good()) {
+        throw std::runtime_error("file error while writing frames");
+      }
       dataChunk()->setSize(dataChunk()->size() + bytesWritten);
       chunkHeader(utils::fourCC("data")).size = dataChunk()->size();
       return frames;
@@ -483,22 +555,35 @@ namespace bw64 {
      * @param[in]  frames   Number of frames to write
      *
      * @returns number of frames written
-     * @discussion inBuffer must match the wave formats internal
-     *   type (16, 24, or 32 bit), (int or float).
+     * `ConstByteSpan` is the preferred overload because it validates the
+     * caller's byte capacity, including for packed 24-bit samples.
      */
-    template <typename T>
-    uint64_t writeRaw(T* inBuffer, uint64_t frames) {
-      if (formatChunk()->bitsPerSample() != sizeof(T) * 8) {
-        throw std::runtime_error("format wrong size");
+    uint64_t writeRaw(ConstByteSpan inBuffer, uint64_t frames) {
+      const uint64_t bytesToWrite = dataBytesForFrames(frames);
+      if (bytesToWrite > inBuffer.size) {
+        throw std::runtime_error("raw input buffer is too small");
       }
-      int frameSize = formatChunk()->blockAlignment();
-      uint64_t bytesToWrite = frames * frameSize;
-      uint64_t start = fileStream_.tellp();
-      fileStream_.write((char *)inBuffer, bytesToWrite);
-      uint64_t end = fileStream_.tellp();
-      dataChunk()->setSize(dataChunk()->size() + (end - start));
+      return writeRaw(inBuffer.data, frames);
+    }
+
+    /// @brief Backwards-compatible untyped raw-frame writer.
+    uint64_t writeRaw(const void* inBuffer, uint64_t frames) {
+      if (frames == 0u) {
+        return 0u;
+      }
+      if (!inBuffer) {
+        throw std::runtime_error("raw input buffer must not be null");
+      }
+
+      const uint64_t bytesToWrite = dataBytesForFrames(frames);
+      fileStream_.write(static_cast<const char*>(inBuffer),
+                        streamSize(bytesToWrite));
+      if (!fileStream_.good()) {
+        throw std::runtime_error("file error while writing raw frames");
+      }
+      dataChunk()->setSize(dataChunk()->size() + bytesToWrite);
       chunkHeader(utils::fourCC("data")).size = dataChunk()->size();
-      return (end - start) / frameSize;
+      return frames;
     }
 
     /**
@@ -509,14 +594,7 @@ namespace bw64 {
      * @param label Optional label
      */
     inline void addMarker(uint32_t id, uint64_t position, const std::string& label = "") {
-      // Get the cue chunk
-      auto cueChunkPtr = cueChunk();
-      if (!cueChunkPtr) {
-        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
-      }
-
-      // Add cue point with label to the chunk
-      cueChunkPtr->addCuePoint(id, position, label);
+      cueChunk_->addCuePoint(id, position, label);
     }
 
     /**
@@ -525,11 +603,7 @@ namespace bw64 {
      * @param cuePoint CuePoint to add
      */
     inline void addMarker(const CuePoint &cuePoint) {
-      auto cueChunkPtr = cueChunk();
-      if (!cueChunkPtr) {
-        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
-      }
-      cueChunkPtr->addCuePoint(cuePoint);
+      cueChunk_->addCuePoint(cuePoint);
     }
 
     /**
@@ -538,12 +612,8 @@ namespace bw64 {
      * @param markers Vector of markers to add
      */
     inline void addMarkers(const std::vector<CuePoint>& markers) {
-      auto cueChunkPtr = cueChunk();
-      if (!cueChunkPtr) {
-        throw std::runtime_error("No cue chunk preallocated. Create writer with maxMarkers > 0.");
-      }
       for (const auto& marker : markers) {
-        cueChunkPtr->addCuePoint(marker);
+        cueChunk_->addCuePoint(marker);
       }
     }
 
@@ -555,7 +625,8 @@ namespace bw64 {
       return FormatDescriptor(
           useFloat ? SampleEncoding::IeeeFloat : SampleEncoding::Pcm,
           bitDepth, bitDepth, useExtensible, channelMask,
-          LargeFileContainer::Bw64);
+          (useExtensible || useFloat) ? LargeFileContainer::Rf64
+                                     : LargeFileContainer::Bw64);
     }
 
     static void validateFormatDescriptor(const FormatDescriptor& format) {
@@ -604,6 +675,24 @@ namespace bw64 {
               "IEEE float valid bits must equal container bits");
         }
       }
+      if (format.largeFileContainer == LargeFileContainer::Bw64 &&
+          (format.sampleEncoding != SampleEncoding::Pcm ||
+           format.extensible)) {
+        throw std::runtime_error(
+            "BW64 output supports only non-extensible PCM");
+      }
+    }
+
+    uint64_t dataBytesForFrames(uint64_t frames) const {
+      const uint64_t frameSize = formatChunk()->blockAlignment();
+      if (frames > (std::numeric_limits<uint64_t>::max)() / frameSize) {
+        throw std::runtime_error("frame byte count overflow");
+      }
+      return frames * frameSize;
+    }
+
+    static std::streamsize streamSize(uint64_t bytes) {
+      return utils::safeCast<std::streamsize>(bytes);
     }
 
     static std::shared_ptr<FormatInfoChunk> makeFormatChunk(
@@ -635,6 +724,8 @@ namespace bw64 {
     std::vector<std::shared_ptr<Chunk>> postDataChunks_;
     FormatDescriptor formatDescriptor_;
     bool useRf64Id_{false};
+    std::shared_ptr<FactChunk> factChunk_;
+    std::shared_ptr<CueChunk> cueChunk_;
   };
 
 }  // namespace bw64

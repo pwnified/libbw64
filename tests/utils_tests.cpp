@@ -13,6 +13,19 @@ TEST_CASE("fourCC") {
   REQUIRE(utils::fourCCToStr(utils::fourCC("axml")) == "axml");
 }
 
+TEST_CASE("classify_channel_mask_without_reinterpretation") {
+  REQUIRE(classifyChannelMask(32u, 0u) ==
+          ChannelMaskClassification::DirectOut);
+  REQUIRE(classifyChannelMask(4u, 0x33u) ==
+          ChannelMaskClassification::ExactBed);
+  REQUIRE(classifyChannelMask(6u, 0x3fu) ==
+          ChannelMaskClassification::ExactBed);
+  REQUIRE(classifyChannelMask(2u, 0x1u) ==
+          ChannelMaskClassification::Partial);
+  REQUIRE(classifyChannelMask(1u, 0x40000000u) ==
+          ChannelMaskClassification::UnknownBits);
+}
+
 TEST_CASE("decode_pcm_samples_8bit") {
   float decodedSamples[5];
   const char* encoded8bit = "\x00\x7f\x81";

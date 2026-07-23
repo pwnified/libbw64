@@ -59,8 +59,8 @@ namespace bw64 {
     UnknownChunk(uint32_t id) { chunkId_ = id; }
     UnknownChunk(std::istream& stream, uint32_t id, uint64_t size) {
       chunkId_ = id;
-      data_.resize(size);
-      utils::readChunk(stream, data_.data(), size);
+      data_.resize(utils::safeCast<size_t>(size));
+      utils::readChunk(stream, data_.data(), data_.size());
     }
 
     uint32_t id() const override { return chunkId_; }
@@ -121,12 +121,22 @@ namespace bw64 {
     FormatInfoChunk(uint16_t channels, uint32_t sampleRate, uint32_t bitDepth,
                     std::shared_ptr<ExtraData> extraData = nullptr,
                     uint16_t formatTag = WAVE_FORMAT_PCM) {
+      if (bitDepth != 16u && bitDepth != 24u && bitDepth != 32u) {
+        std::stringstream errorString;
+        errorString << "bitDepth not supported: " << bitDepth;
+        throw std::runtime_error(errorString.str());
+      }
       formatTag_ = formatTag;
       channelCount_ = channels;
       sampleRate_ = sampleRate;
-      bitsPerSample_ = bitDepth;
+      bitsPerSample_ = static_cast<uint16_t>(bitDepth);
       extraData_ = extraData;
-      
+
+      if (formatTag_ != WAVE_FORMAT_PCM &&
+          formatTag_ != WAVE_FORMAT_IEEE_FLOAT &&
+          formatTag_ != WAVE_FORMAT_EXTENSIBLE) {
+        throw std::runtime_error("unsupported WAVE format tag");
+      }
       if (formatTag_ == WAVE_FORMAT_EXTENSIBLE) {
         if (!extraData_) {
           throw std::runtime_error("need extraData when specifying extensible");
@@ -134,6 +144,9 @@ namespace bw64 {
         if (!isSupportedWaveSubFormat(extraData_->subFormat())) {
           throw std::runtime_error("unsupported extensible subformat");
         }
+      } else if (extraData_) {
+        throw std::runtime_error(
+            "extraData requires WAVE_FORMAT_EXTENSIBLE");
       }
 
       // validation
@@ -143,11 +156,23 @@ namespace bw64 {
       if (sampleRate_ < 1) {
         throw std::runtime_error("sampleRate < 1");
       }
-      if (bitsPerSample_ != 16u && bitsPerSample_ != 24u &&
-          bitsPerSample_ != 32u) {
-        std::stringstream errorString;
-        errorString << "bitDepth not supported: " << bitsPerSample_;
-        throw std::runtime_error(errorString.str());
+      if (isExtensible()) {
+        if (extraData_->validBitsPerSample() == 0u ||
+            extraData_->validBitsPerSample() > bitsPerSample_) {
+          throw std::runtime_error(
+              "valid bits must be between 1 and container bits");
+        }
+      }
+      if (isFloat()) {
+        if (bitsPerSample_ != 32u) {
+          throw std::runtime_error(
+              "IEEE float supports only 32 container bits");
+        }
+        if (isExtensible() &&
+            extraData_->validBitsPerSample() != bitsPerSample_) {
+          throw std::runtime_error(
+              "IEEE float valid bits must equal container bits");
+        }
       }
       if (static_cast<int32_t>(channels) * bitDepth / 8 > 0xffff) {
         throw std::runtime_error(
@@ -224,6 +249,25 @@ namespace bw64 {
     uint32_t sampleRate_;
     uint16_t bitsPerSample_;
     std::shared_ptr<ExtraData> extraData_;
+  };
+
+  /** @brief File-dependent sample count required by non-PCM WAVE formats. */
+  class FactChunk : public Chunk {
+   public:
+    explicit FactChunk(uint32_t sampleLength = 0u)
+        : sampleLength_(sampleLength) {}
+
+    uint32_t id() const override { return utils::fourCC("fact"); }
+    uint64_t size() const override { return sizeof(sampleLength_); }
+    uint32_t sampleLength() const { return sampleLength_; }
+    void sampleLength(uint32_t value) { sampleLength_ = value; }
+
+    void write(std::ostream& stream) const override {
+      utils::writeValue(stream, sampleLength_);
+    }
+
+   private:
+    uint32_t sampleLength_;
   };
 
   /**
@@ -439,22 +483,26 @@ namespace bw64 {
     /// @brief DataSize64Chunk constructor
     DataSize64Chunk(
         uint64_t bw64Size = 0, uint64_t dataSize = 0,
-        std::map<uint32_t, uint64_t> table = std::map<uint32_t, uint64_t>())
-        : bw64Size_(bw64Size), dataSize_(dataSize), table_(table) {
-      dummySize_ = 0;
-    }
+        std::map<uint32_t, uint64_t> table = std::map<uint32_t, uint64_t>(),
+        uint64_t sampleCount = 0)
+        : bw64Size_(bw64Size),
+          dataSize_(dataSize),
+          sampleCount_(sampleCount),
+          table_(table) {}
 
     uint32_t id() const override { return utils::fourCC("ds64"); }
     uint64_t size() const override {
-      return sizeof(bw64Size()) + sizeof(dataSize()) + sizeof(dummySize()) +
+      return sizeof(bw64Size()) + sizeof(dataSize()) + sizeof(sampleCount()) +
              sizeof(tableLength()) + table_.size() * 12;
     }
     /// @brief Bw64Size getter
     uint64_t bw64Size() const { return bw64Size_; }
     /// @brief DataSize getter
     uint64_t dataSize() const { return dataSize_; }
-    /// @brief DummySize getter
-    uint64_t dummySize() const { return dummySize_; }
+    /// @brief RF64 sample count; this field is a zero dummy value in BW64.
+    uint64_t sampleCount() const { return sampleCount_; }
+    /// @brief Backwards-compatible name for the third ds64 64-bit field.
+    uint64_t dummySize() const { return sampleCount(); }
     /// @brief TableLength getter
     uint32_t tableLength() const {
       return utils::safeCast<uint32_t>(table_.size());
@@ -464,8 +512,10 @@ namespace bw64 {
     void bw64Size(uint64_t size) { bw64Size_ = size; }
     /// @brief DataSize setter
     void dataSize(uint64_t size) { dataSize_ = size; }
-    /// @brief DummySize setter
-    void dummySize(uint64_t size) { dummySize_ = size; }
+    /// @brief RF64 sample count setter.
+    void sampleCount(uint64_t count) { sampleCount_ = count; }
+    /// @brief Backwards-compatible setter for the third ds64 64-bit field.
+    void dummySize(uint64_t size) { sampleCount(size); }
 
     /// @brief Get table
     const std::map<uint32_t, uint64_t>& table() const { return table_; }
@@ -493,7 +543,7 @@ namespace bw64 {
     void write(std::ostream& stream) const override {
       utils::writeValue(stream, bw64Size());
       utils::writeValue(stream, dataSize());
-      utils::writeValue(stream, dummySize());
+      utils::writeValue(stream, sampleCount());
       utils::writeValue(stream, tableLength());
       for (auto& entry : table()) {
         utils::writeValue(stream, entry.first);  // chunkId
@@ -504,7 +554,7 @@ namespace bw64 {
    private:
     uint64_t bw64Size_;
     uint64_t dataSize_;
-    uint64_t dummySize_;
+    uint64_t sampleCount_;
     std::map<uint32_t, uint64_t> table_;
   };
 
